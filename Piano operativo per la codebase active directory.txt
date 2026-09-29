@@ -1,0 +1,1822 @@
+Piano operativo per la codebase del connettore Active Directory on-premises per MWA
+1. Scopo, risultato finale e non-obiettivi
+1.1 Scopo
+Questo documento è il piano prescrittivo e sequenziale per costruire da zero una nuova codebase Python del connettore Active Directory Domain Services on-premises per MWA.
+
+Il documento è destinato direttamente a un coding agent. Il coding agent deve:
+
+Eseguire un solo step alla volta.
+Rispettare l'ordine delle dipendenze.
+Non anticipare implementazioni appartenenti a step futuri.
+Produrre PR piccole, focalizzate e verificabili.
+Fermarsi ai checkpoint umani e alle stop condition definite.
+Distinguere sempre tra:
+[REQUISITO/FATTO]: imposto dalle fonti o dal presente mandato.
+[DECISIONE]: scelta architetturale prescritta.
+[DA VALIDARE]: ipotesi che richiede una prova sperimentale o una decisione umana.
+1.2 Risultato finale
+Il risultato finale deve essere un servizio on-premises che:
+
+usa Python 3.11+, FastAPI, Pydantic v2, Pydantic Settings, uv, pytest, Ruff e mypy strict;
+espone capability LDAP AD specifiche, versionate e allowlisted;
+può ricevere comandi cloud tramite un worker outbound-only e un trasporto sostituibile;
+isola la libreria LDAP dietro una porta astratta DirectoryGateway;
+usa objectGUID come identificatore AD stabile e risolve il DN immediatamente prima dell'operazione;
+applica policy applicative e si affida anche alle ACL AD minime del service account o gMSA;
+supporta idempotenza, concorrenza, audit, verifica read-after-write e redazione dei dati sensibili;
+restituisce evidenze utili al cloud per monitorare separatamente la convergenza Entra;
+mantiene espliciti i boundary di cliente, tenant, connettore, foresta e dominio;
+integra i pattern MWA esistenti di Trusted Agent, Action Catalog, HITL, correlazione, deduplica e routing. <source>01KTNQJBGXXERDHY1QYXV4B67R</source>
+1.3 Non-obiettivi
+Non devono entrare nel prodotto iniziale:
+
+una GUI desktop;
+Lazarus o Object Pascal;
+un fork o una traduzione meccanica di OpenRSAT;
+endpoint per query LDAP arbitrarie;
+endpoint per PowerShell arbitrario;
+endpoint per esecuzione di comandi di sistema;
+un PATCH generico che consenta all'agente di modificare attributi LDAP arbitrari;
+esposizione diretta di LDAP verso Internet o verso il cloud;
+obbligo di porte inbound presso il cliente;
+uso di account Domain Admin;
+gestione di nTSecurityDescriptor, deleghe ACL o modifica generalizzata della sicurezza AD nella prima release;
+implementazione on-prem della verifica di convergenza Entra;
+hardcoding dei tempi di sincronizzazione Entra;
+assunzione universale che onPremisesImmutableId sia sempre base64(objectGUID);
+una piattaforma IAM generica o un sostituto di Entra Connect;
+supporto immediato a topologie multi-forest complesse, HA distribuita o writeback specifici non ancora validati.
+1.4 Uso di OpenRSAT
+[REQUISITO/FATTO] OpenRSAT è un client desktop LDAP scritto in Object Pascal/Lazarus e non un server API. Sono rilevanti solo i comportamenti osservabili del core e del trasporto LDAP; la GUI è esclusa. <source>01M2N5AZ1693398GPG8D9FY904</source>
+
+[DECISIONE] OpenRSAT deve essere usato esclusivamente come reference comportamentale per primitive quali Search, Add, Modify, Delete, ModifyDN, paging, reset password, unlock, userAccountControl, pwdLastSet, error mapping e read-after-write. <source>01M2N5AZ1693398GPG8D9FY904</source>
+
+[DECISIONE] Il team non deve copiare codice, effettuare porting meccanico o introdurre dipendenze da Lazarus.
+
+2. Assunzioni e decisioni da convalidare
+2.1 Principi vincolanti
+[REQUISITO/FATTO] La codebase usa Python 3.11+, src layout, separazione tra domain, services, API e infrastructure, uv, Ruff con line length 120, mypy strict, pytest, Pydantic Settings, logging strutturato e CI bloccante. <source>01KTNQQE0AMCKZ3ZGEPC2JWZ5K</source>
+[DECISIONE] La libreria LDAP non è parte del dominio: è incapsulata in un adapter di DirectoryGateway.
+[DA VALIDARE] La scelta tra ldap3 e una libreria alternativa dipende dallo spike su un DC reale. Non si deve dichiarare supportata una primitiva senza evidenza riproducibile.
+[REQUISITO/FATTO] Le operazioni rischiose devono inizialmente usare validation mode e HITL. <source>01KTNQKMFT27T07063HYTMNFSA</source>
+[DECISIONE] Una singola installazione può partire come single-customer, ma ogni record, comando e configurazione deve avere boundary espliciti per customer_id, tenant_id, connector_id, forest_id e domain_id.
+2.2 Registro delle decisioni e validazioni
+Decisione	Stato	Metodo di validazione	Exit criterion
+Python 3.11+, FastAPI e Pydantic v2	Decisa	Bootstrap, test startup e CI	Applicazione avviabile, schema OpenAPI valido, CI verde
+uv e lockfile versionato	Decisa	Installazione pulita in CI	uv sync --frozen riproducibile
+Ruff line length 120 e mypy strict	Decisa	Quality gate CI	Nessun errore Ruff o mypy
+Architettura esagonale/layered	Decisa	Import-boundary test	Domain e application non importano FastAPI o librerie LDAP
+DirectoryGateway astratto	Decisa	Contract test con fake e adapter reale	Stessa suite passa sul fake e sull'adapter selezionato
+Libreria LDAP concreta	Da validare	Spike comparativo su VM/DC	Tutte le primitive MVP hanno esito documentato; gap e workaround approvati
+LDAPS e validazione certificato	Da validare	Test con CA valida, scaduta e non trusted	Connessione valida accettata; cert invalidi rifiutati fail-closed
+Kerberos con account tradizionale	Da validare	Bind da host domain-joined	Autenticazione ripetibile senza secret nei log
+gMSA	Da validare	Esecuzione servizio con gMSA	Bind LDAP e rinnovo credenziali funzionanti senza password statica
+Paged search	Da validare	Dataset oltre page size	Nessun duplicato/perdita; cookie gestito correttamente
+ModifyDN rename/move	Da validare	Rename e move intra-dominio	objectGUID invariato e nuovo DN verificato
+Reset unicodePwd	Da validare	LDAPS, password policy e test negativi	Reset riuscito solo su canale protetto; password mai loggata
+Attributi binari	Da validare	Lettura objectGUID, SID e valori noti	Conversione lossless e schema coerente
+Controlli LDAP AD	Da validare	Matrice dei controlli richiesti	OID, comportamento e fallback documentati
+DC pinning per mutazione/verifica	Da validare	Operazione e read-after-write sullo stesso DC	Evidenza riporta lo stesso DC e verifica deterministica
+objectGUID come ID stabile	Decisa	Rename/move E2E	Riferimento invariato dopo cambio DN
+Source anchor Entra	Configurabile/da scoprire	Config cliente e discovery documentata	Nessuna assunzione globale; strategia esplicita per profilo
+Trasporto outbound-only	Decisa	Prototipo worker e security review	Nessuna porta inbound richiesta; retry e dedup verificati
+Service Bus/relay concreto	Da decidere nel cloud integration step	Contract e prova end-to-end	Envelope interoperabile e trasporto sostituibile
+Operation store	Da validare	ADR storage e fault test	Transizioni atomiche, dedup e recovery dimostrati
+Audit tamper-evident	Decisa; meccanismo da validare	Hash chaining/signature test	Alterazioni rilevabili ed export redatto
+Tempi di convergenza Entra	Non hardcodificabili	Config cloud e timeout test	Poller cloud configurabile con timeout/escalation
+Packaging Windows Service	Da validare	Installazione su host Windows	Startup, restart e log operativi conformi
+Container	Condizionale	Verifica supporto autenticazione e host	Adottato solo se non compromette gMSA/Kerberos/LDAPS
+Multi-forest complesso	Post-MVP	Laboratorio dedicato	Nessun cross-boundary leakage e routing deterministico
+Lo studio OpenRSAT propone outbound-only, objectGUID, gMSA/account dedicato, scope OU/BaseDN, audit e health, ma source anchor, sync timing e alcuni dettagli HTTP devono essere trattati come ipotesi da validare. <source>01M2N5AZ1693398GPG8D9FY904</source>
+
+3. Architettura finale
+3.1 Diagramma logico
+mermaid
+
+
+                
+					
+flowchart LR
+    TA[MWA Trusted Agent]
+    AC[Action Catalog allowlisted]
+    AR[Authority Resolver cloud-side]
+    MCP[MCP Entra]
+    BUS[Bus / Relay outbound-compatible]
+    W[Worker on-prem]
+    CE[Command Envelope Validator]
+    PE[Policy Engine]
+    AS[Application Services]
+    DG[DirectoryGateway]
+    LDAP[LDAP Adapter]
+    DC[(Active Directory DC)]
+    OPS[(Operation Store)]
+    AUD[(Audit Store tamper-evident)]
+    EC[Entra Connect / Cloud Sync]
+    POLL[Entra Convergence Poller cloud-side]
+    HITL[HITL / Approval]
+    TICKET[Ticket State]
+
+    TA --> AC
+    AC --> AR
+    AR -->|Cloud authority| MCP
+    AR -->|On-prem authority| HITL
+    HITL --> BUS
+    BUS -->|outbound receive| W
+    W --> CE
+    CE --> PE
+    PE --> AS
+    AS --> DG
+    DG --> LDAP
+    LDAP --> DC
+
+    W --- OPS
+    PE --- AUD
+    AS --- AUD
+    DG --- AUD
+
+    DC --> EC
+    EC --> POLL
+    POLL --> TICKET
+    W -->|AD evidence| BUS
+    BUS --> TICKET
+
+				
+            
+3.2 Flusso di autorità
+[REQUISITO/FATTO] Solo il Trusted Agent MWA può accedere agli MCP e l'Action Catalog impone server, rischio, idempotenza, rollback e campi sensibili invece di accettarli dall'LLM. <source>01KTNQJBGXXERDHY1QYXV4B67R</source>
+
+[DECISIONE] Un AuthorityResolver cloud-side determina, per ogni combinazione di target, capability e attributo, se l'autorità è:
+
+Entra/MCP;
+AD on-prem tramite connettore;
+ibrida con mutazione on-prem e successiva verifica Entra;
+non supportata;
+soggetta a HITL.
+Il resolver deve essere deterministico e configurato, non inferito liberamente dall'LLM.
+
+3.3 Flusso on-prem
+Il worker riceve un command envelope dal bus/relay.
+Valida versione, timestamp, nonce, tenant, customer, connector, capability e payload.
+Autentica il chiamante e autorizza scope/capability.
+Registra RECEIVED.
+Esegue policy e preflight.
+Registra AUTHORIZED.
+Riserva l'idempotency key e passa a EXECUTING.
+Risolve l'oggetto per objectGUID e ottiene il DN corrente.
+Esegue la primitiva sull'adapter LDAP.
+Registra AD_COMMITTED.
+Esegue read-after-write sullo stesso DC.
+Registra AD_VERIFIED oppure FAILED_VERIFICATION.
+Restituisce risultato ed evidenze, senza attendere Entra.
+Il cloud registra WAITING_ENTRA_SYNC, interroga Entra e passa a ENTRA_CONVERGED, FAILED, EXPIRED o ESCALATED.
+3.4 Stati operativi
+Stato	Responsabile	Significato
+RECEIVED	On-prem	Envelope accettato sintatticamente e registrato
+AUTHORIZED	On-prem	Autenticazione, scope, policy e approval context validi
+EXECUTING	On-prem	Operazione LDAP in corso
+AD_COMMITTED	On-prem	DC ha accettato la mutazione
+AD_VERIFIED	On-prem	Read-after-write sullo stesso DC conferma il risultato
+WAITING_ENTRA_SYNC	Cloud	AD è verificato; il cloud attende la sincronizzazione
+ENTRA_CONVERGED	Cloud	Lo stato Entra atteso è stato osservato
+FAILED	Entrambi	Errore prima del commit o errore terminale classificato
+FAILED_VERIFICATION	On-prem	Commit accettato, ma verifica non riuscita o inconcludente
+EXPIRED	Cloud/worker	Deadline superata senza completamento valido
+ESCALATED	Cloud	Richiesto intervento umano
+Le transizioni devono essere atomiche; timeout ed escalation fanno parte dei requisiti operativi MWA. <source>01KTNQKMFT27T07063HYTMNFSA</source>
+
+3.5 Semantica HTTP
+200 OK: operazione sincrona completata e verificata con corpo risultato.
+204 No Content: operazione sincrona completata e verificata senza corpo utile.
+202 Accepted: lavoro realmente accodato o asincrono; deve includere operation_id e URL di stato.
+4xx: richiesta non valida, non autorizzata, fuori policy, ambigua o in conflitto.
+5xx: dipendenza LDAP, storage o errore interno classificato.
+Un commit LDAP seguito da verifica fallita non deve essere rappresentato come semplice errore pre-commit: usare FAILED_VERIFICATION e includere evidenze redatte.
+4. Confini dei repository
+4.1 Nuova codebase on-prem
+Appartengono al nuovo repository:
+
+domain model e invarianti;
+application services;
+capability catalog on-prem;
+policy engine;
+API FastAPI amministrativa e capability-based;
+command envelope e worker;
+astrazioni di bus/relay;
+DirectoryGateway;
+adapter LDAP selezionato;
+configuration profiles per cliente/tenant/foresta/dominio;
+autenticazione e autorizzazione locale;
+mTLS/JWT validation;
+anti-replay;
+idempotency e operation store;
+audit tamper-evident;
+health, readiness, metrics, tracing e diagnostica redatta;
+packaging e installer;
+migrazioni storage;
+test unitari, contract, integration AD e security;
+documentazione operativa e runbook.
+4.2 Modifiche successive in helpdesk-agent-app e MCP Entra
+Devono essere implementate nel repository cloud appropriato durante lo Step 20:
+
+nuove entry nell'Action Catalog;
+AuthorityResolver;
+routing Entra/on-prem;
+binding tra ticket, operation e target identity;
+publishing dei command envelope;
+ricezione dei risultati;
+stato WAITING_ENTRA_SYNC;
+poller Entra e stato ENTRA_CONVERGED;
+timeout configurabile ed escalation;
+HITL per capability rischiose;
+UI o flussi ticket per approval;
+mapping tra stati del connettore e state machine MWA;
+policy del team mwa-team-identity.
+Queste modifiche devono estendere i pattern MWA esistenti di Action Catalog, Trusted Agent, Service Bus, RBAC, dedup, ticket lock e logging correlato. <source>01KTNQJBGXXERDHY1QYXV4B67R</source>
+
+4.3 Elementi vietati nel connettore
+Non devono entrare nel repository on-prem:
+
+logica LLM o prompt orchestration;
+Azure OpenAI;
+polling diretto generalizzato di Entra;
+credenziali Entra globali non necessarie;
+Jira workflow completo;
+implementazione di Entra Connect;
+query LDAP inviate dal cloud;
+PowerShell remoto;
+shell execution;
+GUI amministrativa;
+gestione generalizzata ACL/delegation nell'MVP;
+hardcoding di tenant, domini, OU, DC o source anchor;
+segreti reali, certificati privati o password di laboratorio.
+5. Struttura directory proposta
+I file devono rimanere idealmente sotto circa 400 righe ed evitare god files. <source>01KTNQQDTHWPC2BPD8955YWZ5K</source>
+
+text
+
+
+                
+					
+mwa-ad-connector/
+├── .github/
+│   ├── CODEOWNERS
+│   ├── dependabot.yml
+│   ├── pull_request_template.md
+│   └── workflows/
+│       ├── ci.yml
+│       ├── security.yml
+│       └── release.yml
+├── .pre-commit-config.yaml
+├── .python-version
+├── LICENSE
+├── README.md
+├── SECURITY.md
+├── pyproject.toml
+├── uv.lock
+├── src/
+│   └── mwa_ad_connector/
+│       ├── __init__.py
+│       ├── bootstrap.py
+│       ├── domain/
+│       │   ├── __init__.py
+│       │   ├── enums.py
+│       │   ├── errors.py
+│       │   ├── identifiers.py
+│       │   ├── objects.py
+│       │   ├── capabilities.py
+│       │   ├── operations.py
+│       │   ├── evidence.py
+│       │   └── health.py
+│       ├── application/
+│       │   ├── __init__.py
+│       │   ├── ports/
+│       │   │   ├── directory_gateway.py
+│       │   │   ├── operation_repository.py
+│       │   │   ├── audit_sink.py
+│       │   │   ├── command_transport.py
+│       │   │   ├── clock.py
+│       │   │   └── nonce_store.py
+│       │   ├── services/
+│       │   │   ├── discovery_service.py
+│       │   │   ├── identity_resolution_service.py
+│       │   │   ├── group_membership_service.py
+│       │   │   ├── account_service.py
+│       │   │   ├── password_service.py
+│       │   │   ├── user_service.py
+│       │   │   ├── group_service.py
+│       │   │   ├── ou_service.py
+│       │   │   └── operation_service.py
+│       │   ├── commands/
+│       │   │   ├── envelope.py
+│       │   │   ├── dispatcher.py
+│       │   │   └── handlers/
+│       │   └── verification/
+│       │       ├── read_after_write.py
+│       │       └── comparators.py
+│       ├── policy/
+│       │   ├── __init__.py
+│       │   ├── catalog.py
+│       │   ├── engine.py
+│       │   ├── scopes.py
+│       │   ├── protected_targets.py
+│       │   ├── approvals.py
+│       │   └── preflight.py
+│       ├── api/
+│       │   ├── __init__.py
+│       │   ├── app.py
+│       │   ├── dependencies.py
+│       │   ├── error_handlers.py
+│       │   ├── middleware/
+│       │   │   ├── correlation.py
+│       │   │   ├── payload_limit.py
+│       │   │   ├── rate_limit.py
+│       │   │   └── security_headers.py
+│       │   ├── schemas/
+│       │   │   ├── common.py
+│       │   │   ├── discovery.py
+│       │   │   ├── accounts.py
+│       │   │   ├── groups.py
+│       │   │   ├── users.py
+│       │   │   ├── ous.py
+│       │   │   └── operations.py
+│       │   └── routes/
+│       │       ├── health.py
+│       │       ├── discovery.py
+│       │       ├── accounts.py
+│       │       ├── groups.py
+│       │       ├── users.py
+│       │       ├── ous.py
+│       │       └── operations.py
+│       ├── infrastructure/
+│       │   ├── __init__.py
+│       │   ├── ldap/
+│       │   │   ├── adapter.py
+│       │   │   ├── connection.py
+│       │   │   ├── discovery.py
+│       │   │   ├── filters.py
+│       │   │   ├── controls.py
+│       │   │   ├── mappings.py
+│       │   │   ├── mutations.py
+│       │   │   └── error_mapping.py
+│       │   ├── persistence/
+│       │   │   ├── operation_store.py
+│       │   │   ├── audit_store.py
+│       │   │   ├── nonce_store.py
+│       │   │   └── migrations/
+│       │   ├── transport/
+│       │   │   ├── worker.py
+│       │   │   ├── relay.py
+│       │   │   ├── retry.py
+│       │   │   └── dead_letter.py
+│       │   └── telemetry/
+│       │       ├── logging.py
+│       │       ├── metrics.py
+│       │       └── tracing.py
+│       ├── security/
+│       │   ├── __init__.py
+│       │   ├── authentication.py
+│       │   ├── authorization.py
+│       │   ├── jwt_validation.py
+│       │   ├── mtls.py
+│       │   ├── anti_replay.py
+│       │   ├── tenant_binding.py
+│       │   ├── redaction.py
+│       │   └── secrets.py
+│       ├── operations/
+│       │   ├── state_machine.py
+│       │   ├── idempotency.py
+│       │   ├── audit.py
+│       │   └── retention.py
+│       ├── config/
+│       │   ├── settings.py
+│       │   ├── profiles.py
+│       │   ├── validation.py
+│       │   └── schema.py
+│       └── entrypoints/
+│           ├── api.py
+│           └── worker.py
+├── tests/
+│   ├── unit/
+│   ├── contract/
+│   ├── integration/
+│   │   ├── ldap/
+│   │   ├── persistence/
+│   │   └── transport/
+│   ├── e2e/
+│   ├── security/
+│   ├── performance/
+│   ├── resilience/
+│   ├── fixtures/
+│   └── fakes/
+├── docs/
+│   ├── architecture/
+│   │   ├── overview.md
+│   │   ├── threat-model.md
+│   │   └── trust-boundaries.md
+│   ├── adr/
+│   ├── capabilities/
+│   ├── implementation/
+│   ├── api/
+│   ├── laboratory/
+│   ├── operations/
+│   │   ├── runbook.md
+│   │   ├── incident-response.md
+│   │   ├── backup-restore.md
+│   │   └── troubleshooting.md
+│   └── provenance/
+│       └── openrsat-review.md
+├── scripts/
+│   ├── bootstrap.ps1
+│   ├── bootstrap.sh
+│   ├── validate_config.py
+│   └── lab/
+└── packaging/
+    ├── windows-service/
+    ├── container/
+    └── config-templates/
+
+				
+            
+6. Contratti di dominio
+6.1 Enum principali
+Enum	Valori
+ObjectType	USER, GROUP, OU
+IdentifierType	OBJECT_GUID, UPN, SAM_ACCOUNT_NAME, MAIL, DISTINGUISHED_NAME, GROUP_NAME
+OperationState	RECEIVED, AUTHORIZED, EXECUTING, AD_COMMITTED, AD_VERIFIED, WAITING_ENTRA_SYNC, ENTRA_CONVERGED, FAILED, FAILED_VERIFICATION, EXPIRED, ESCALATED
+RiskLevel	LOW, MEDIUM, HIGH, CRITICAL
+ApprovalMode	NONE, REQUIRED, TWO_PERSON, BREAK_GLASS_FORBIDDEN
+MutationDisposition	APPLIED, NO_OP, REJECTED, QUEUED, PARTIALLY_OBSERVED
+HealthState	HEALTHY, DEGRADED, UNHEALTHY
+ErrorCategory	VALIDATION, AUTHENTICATION, AUTHORIZATION, POLICY, NOT_FOUND, AMBIGUOUS, CONFLICT, CONCURRENCY, DEPENDENCY, VERIFICATION, TIMEOUT, RATE_LIMIT, INTERNAL
+6.2 ObjectReference
+Responsabilità: identificare un oggetto senza usare un DN obsoleto come identità primaria.
+
+Campo	Tipo	Regole
+object_type	ObjectType	Obbligatorio
+object_guid	UUID opzionale	Preferito e obbligatorio per mutazioni su oggetti esistenti
+identifier_type	IdentifierType opzionale	Solo valori allowlisted
+identifier_value	stringa opzionale	Normalizzata e soggetta a limiti
+domain_id	stringa	Obbligatorio
+forest_id	stringa	Obbligatorio
+expected_dn	stringa opzionale	Solo safeguard, mai identità primaria
+Invarianti:
+
+deve essere presente object_guid oppure una coppia identificatore/valore;
+le mutazioni devono risolvere a un singolo objectGUID;
+un DN fornito dal chiamante non deve bypassare il resolver;
+l'ambiguità produce un errore terminale, non una scelta euristica.
+6.3 DirectoryUser
+Campi minimi:
+
+object_guid;
+distinguished_name;
+domain_id;
+sam_account_name;
+user_principal_name;
+display_name;
+enabled;
+locked;
+pwd_last_set;
+member_of_guids;
+attributes: vista redatta e allowlisted;
+version_token: token derivato da attributi di concorrenza disponibili;
+source_dc;
+observed_at.
+Non deve contenere password, unicodePwd, token Kerberos o secret.
+
+6.4 DirectoryGroup
+Campi minimi:
+
+object_guid;
+distinguished_name;
+domain_id;
+sam_account_name;
+name;
+group_scope;
+group_category;
+member_guids;
+is_privileged;
+protection_reasons;
+version_token;
+source_dc;
+observed_at.
+6.5 CapabilityRequest
+Campi:
+
+api_version;
+capability;
+customer_id;
+tenant_id;
+connector_id;
+forest_id;
+domain_id;
+target;
+parameters;
+dry_run;
+idempotency_key;
+correlation_id;
+ticket_id;
+requested_at;
+expires_at;
+nonce;
+approval_context;
+expected_version;
+requested_by.
+Invarianti:
+
+capability presente nel catalogo;
+schema dei parametri specifico per capability;
+nessun parametro extra;
+binding tenant/connettore obbligatorio;
+expires_at > requested_at;
+idempotency key obbligatoria per ogni mutazione;
+timestamp e nonce obbligatori per comandi remoti.
+6.6 CallerContext
+Campi:
+
+subject;
+issuer;
+audience;
+tenant_id;
+customer_id;
+connector_id;
+scopes;
+roles;
+certificate_thumbprint;
+auth_method;
+token_id;
+authenticated_at.
+Responsabilità:
+
+rappresentare identità già autenticata;
+non prendere decisioni LDAP;
+alimentare authorization e audit;
+impedire riuso cross-tenant o cross-connector.
+6.7 MutationResult
+Campi:
+
+operation_id;
+state;
+disposition;
+target_object_guid;
+resolved_dn_before;
+resolved_dn_after;
+changed_fields;
+verification_evidence;
+source_dc;
+committed_at;
+verified_at;
+warnings;
+rollback_status;
+entra_evidence_hint.
+Non include secret né valori sensibili non necessari.
+
+6.8 VerificationEvidence
+Campi:
+
+verification_type;
+source_dc;
+observed_at;
+expected;
+observed;
+matched;
+attribute_hashes;
+object_guid;
+dn;
+replication_metadata_hint;
+redaction_applied.
+Le evidenze devono essere sufficienti al cloud per sapere cosa è stato verificato in AD, ma non devono dichiarare convergenza Entra.
+
+6.9 OperationRecord
+Campi:
+
+identificatori di operation, customer, tenant, connector, forest, domain;
+capability e risk;
+hash canonico della richiesta;
+idempotency key;
+correlation e ticket ID;
+caller identity redatta;
+target GUID;
+stato corrente;
+cronologia transizioni;
+DC selezionato;
+timestamp;
+deadline;
+error code;
+verification evidence;
+audit chain reference;
+retry count;
+transport message ID.
+Invarianti:
+
+transizioni conformi alla state machine;
+unicità di (tenant_id, connector_id, idempotency_key);
+stessa key con payload differente produce collisione;
+un record non può retrocedere da stato terminale;
+audit scritto prima della mutazione, dopo il commit e dopo la verifica.
+6.10 ErrorResponse
+Campi:
+
+error.code;
+error.category;
+error.message;
+error.retryable;
+error.operation_id;
+error.correlation_id;
+error.details redatti;
+error.remediation;
+error.dependency_code normalizzato;
+timestamp.
+Il testo LDAP libero non deve diventare un contratto API.
+
+6.11 HealthStatus
+Campi:
+
+status;
+version;
+connector_id;
+configuration_valid;
+operation_store;
+audit_store;
+transport;
+ldap_connectivity;
+ldaps_certificate;
+dc_selection;
+clock_skew;
+last_successful_bind;
+last_successful_operation;
+degraded_reasons;
+checked_at.
+L'endpoint pubblico di health non deve esporre DN, hostname interni, thumbprint completi o dettagli sensibili.
+
+7. Catalogo finale delle capability
+7.1 Regole comuni
+Per tutte le capability:
+
+input validato con modello specifico extra="forbid";
+capability presente in allowlist;
+target dentro Base DN/OU gestita;
+objectGUID usato per mutazioni di oggetti esistenti;
+DN risolto immediatamente prima dell'esecuzione;
+protezione esplicita per gruppi/account privilegiati;
+controllo applicativo e ACL AD entrambi necessari;
+read-after-write sullo stesso DC per mutazioni;
+idempotency key obbligatoria;
+audit before/requested/after;
+nessun secret in log, audit o response.
+Le operazioni atomiche e i parametri rigorosamente validati sono requisiti MWA. <source>01KTNQKMFT27T07063HYTMNFSA</source>
+
+7.2 Release R0/R1: discovery e read
+Capability	Input	Precondizioni e permesso applicativo	ACL AD minima	Rischio/idempotenza	Verifica, compensazione ed errori
+connector.health.read	Nessuno	Caller autenticato; scope ad.health.read	Nessuna oltre bind minimo	Basso; naturalmente idempotente	Verifica componenti locali; errori dependency/config
+connector.readiness.read	Nessuno	Scope ad.readiness.read	Bind e RootDSE read	Basso; idempotente	Fallisce readiness se prerequisiti obbligatori mancano
+directory.rootdse.read	domain_id	Profilo attivo; scope ad.discovery.read	Read RootDSE	Basso; idempotente	Restituisce capability redatte; errori DC unavailable
+directory.capabilities.read	domain_id	Discovery completata	Read schema/config consentito	Basso; idempotente	Confronta feature configurate e osservate
+user.resolve	GUID o identificatore allowlisted	Scope ad.user.read; filtro predefinito	Read attributi identificativi	Basso; idempotente	Esattamente 0/1 risultato; AMBIGUOUS_TARGET se >1
+group.resolve	GUID o identificatore allowlisted	Scope ad.group.read	Read attributi identificativi	Basso; idempotente	Come sopra
+user.get	objectGUID, projection allowlisted	Target in dominio configurato	Read attributi richiesti	Basso; idempotente	Mapping tipizzato; errore schema inatteso
+group.get	objectGUID, projection allowlisted	Target in dominio configurato	Read attributi richiesti	Basso; idempotente	Protezione segnalata, non nascosta
+user.search	query_profile, parametri, page token	Solo filtri predefiniti; limiti paging	Read nell'OU/BaseDN	Medio; idempotente	Page token firmato; errori invalid filter profile
+group.search	Come sopra	Come sopra	Read nell'OU/BaseDN	Medio; idempotente	Nessun filtro LDAP raw
+group.members.list	Group GUID, paging	Scope ad.group.members.read	Read member e attributi minimi	Basso; idempotente	Paging e riferimenti non risolti segnalati
+7.3 Release MVP: account e membership
+Capability	Input	Precondizioni/permesso	ACL AD minima e scope	Rischio/idempotenza	Verifica/rollback/errori
+group.member.add	Group GUID, member GUID, expected version opzionale	ad.group.member.write; gruppo e membro allowlisted; cycle check	Write member sul gruppo target	Medio/alto; idempotente: membro già presente=NO_OP	Rilettura membership stesso DC; compensazione remove solo se questa operation ha aggiunto; errori privileged, cycle, concurrent change
+group.member.remove	Group GUID, member GUID	ad.group.member.write; protezione membership minima	Write member sul gruppo	Alto; idempotente: assente=NO_OP	Rilettura; compensazione add condizionata; errori protected group, last required member policy
+account.unlock	User GUID	ad.account.unlock; account non protetto	Write lockoutTime sul target	Medio; idempotente	Verifica stato unlock; nessun rollback utile; ACL insufficienti, account non locked
+account.password.reset	User GUID, password tramite campo secret protetto	ad.account.password.reset; LDAPS valido; approval secondo policy	Extended/write necessario per unicodePwd sul target	Critico; idempotenza per operation, mai confronto password	Verifica indiretta sicura; nessun rollback alla password precedente; errori channel insecure, password policy, privileged target
+account.password.force_change	User GUID, booleano consentito	ad.account.password.force_change	Write pwdLastSet	Alto; idempotente sullo stato	Verifica pwdLastSet; compensazione solo se valore precedente sicuro e policy lo consente
+Il reset password tramite unicodePwd richiede un canale protetto ed è una primitiva osservata nella reference comportamentale OpenRSAT. <source>01M2N5AZ1693398GPG8D9FY904</source>
+
+7.4 Release GA: account, utenti, gruppi e OU
+Capability	Input	Precondizioni/permesso	ACL AD minima e target scope	Rischio/idempotenza	Verifica/compensazione/errori
+account.enable	User GUID, expected version	ad.account.enable; approval policy	Write proprietà necessarie a userAccountControl	Alto; idempotente	Verifica bit atteso; ripristino valore precedente condizionato
+account.disable	User GUID, reason, approval	ad.account.disable; non service/protected salvo policy	Write userAccountControl	Alto; idempotente	Verifica disable; re-enable solo con nuova autorizzazione
+user.create	Parent OU GUID/DN configurato, attributi allowlisted	ad.user.create; naming/schema preflight	Create child user nell'OU e write attributi necessari	Alto; idempotenza tramite external request marker o ricerca controllata	Verifica GUID e attributi; compensazione delete/disable secondo policy
+user.attributes.update	User GUID, mappa allowlisted, expected version	ad.user.attributes.write; staged diff interno	Write dei soli attributi delegati	Medio/alto	Verifica diff; compensazione con snapshot redatto; schema/concurrency error
+user.rename	User GUID, nuovo RDN	ad.user.rename; naming policy	Validated write/ModifyDN nello scope	Alto	GUID invariato e DN atteso; compensazione rename se non occupato
+user.move	User GUID, destination OU	ad.user.move; entrambe le OU gestite	Move/ModifyDN tra OU consentite	Alto	GUID invariato; compensazione move-back se sicura
+user.delete	User GUID, approval e reason	ad.user.delete; preferire disable/stage	Delete child sul target	Critico	Verifica assenza; rollback non garantito, usare restore procedure se disponibile
+group.create	Parent OU, nome, scope, category	ad.group.create	Create group nell'OU	Alto	Verifica GUID/schema; compensazione delete se vuoto
+group.attributes.update	GUID, allowlist	ad.group.attributes.write	Write attributi delegati	Alto	Staged diff e verifica
+group.rename	GUID, nuovo RDN	ad.group.rename	ModifyDN	Alto	GUID invariato; rename-back condizionato
+group.move	GUID, destination OU	ad.group.move	ModifyDN scope	Alto	Verifica e move-back condizionato
+group.delete	GUID, approval	ad.group.delete; gruppo non privileged; membership policy	Delete group	Critico	Verifica assenza; nessun rollback affidabile
+ou.create	Parent scope, nome	ad.ou.create	Create OU child	Alto	Verifica GUID/DN; compensazione delete se vuota
+ou.rename	OU GUID, nuovo RDN	ad.ou.rename	ModifyDN OU	Alto	Verifica; compensazione condizionata
+ou.move	OU GUID, parent destinazione	ad.ou.move	ModifyDN nelle aree gestite	Critico	Preflight subtree; verifica; move-back condizionato
+ou.delete	OU GUID, approval, require_empty=true	ad.ou.delete; managed scope	Delete OU	Critico	Solo OU vuota e non protetta; errore non-empty/protected
+Il staged diff deve generare modifiche Add/Delete/Replace minime e trattare separatamente attributi multivalore. Questo pattern deriva dalla reference OpenRSAT. <source>01M2N5AZ1693398GPG8D9FY904</source>
+
+7.5 Operation e audit
+Capability	Input	Permesso	Rischio	Regole
+operation.get	operation_id	ad.operation.read e stesso tenant/connector	Basso	Restituisce stato ed evidenze redatte
+operation.list	filtri allowlisted, paging	ad.operation.read	Medio	Nessuna ricerca libera; retention applicata
+audit.get	audit_id	ad.audit.read e ruolo compliance	Alto	Redazione obbligatoria; accesso auditato
+audit.export	intervallo, capability, ticket	ad.audit.export; approval amministrativa	Alto	Export firmato/tamper-evident e limitato
+I log devono essere strutturati e correlare ticket e identità; l'audit deve essere completo, immutabile ed esportabile per compliance. <source>01KTNQKMFT27T07063HYTMNFSA</source>
+
+7.6 Modulo avanzato escluso dalla prima release
+nTSecurityDescriptor, ownership, ACE, delegation management e ACL inheritance sono un modulo separato ad altissimo rischio:
+
+disabilitato di default;
+non condiviso con il CRUD ordinario;
+richiede threat model e ADR dedicati;
+richiede parsing binario e test di canonicalizzazione;
+richiede approval forte e possibilmente four-eyes;
+vieta ACL generiche inviate dall'agente;
+deve offrire solo template di delega allowlisted;
+non può essere implementato prima dello Step 23.
+8. Contratto API e command envelope versionato
+8.1 Versionamento
+Base path API: /api/v1.
+Envelope: schema_version: "1.0".
+Breaking change: nuova major.
+Campo sconosciuto: rifiutato.
+Capability: identificatore stabile e separato dalla route.
+Deprecazioni: documentate e osservabili prima della rimozione.
+8.2 Header comuni
+Header	Obbligatorio	Regola
+Authorization	Sì, se JWT	Bearer token con issuer/audience allowlisted
+X-Correlation-ID	Sì	UUID o formato validato
+X-Ticket-ID	Sì per mutazioni	ID ticket validato
+Idempotency-Key	Sì per mutazioni	Unica per tenant+connector; lunghezza limitata
+X-Request-Timestamp	Sì	Entro skew configurato
+X-Request-Nonce	Sì	Monouso entro TTL
+X-Tenant-ID	Sì	Deve coincidere con token ed envelope
+X-Connector-ID	Sì	Deve coincidere con binding locale
+Content-Type	Sì	application/json
+traceparent	No ma raccomandato	Propagazione OpenTelemetry
+8.3 Endpoint specifici
+text
+
+
+                
+					
+GET  /api/v1/health
+GET  /api/v1/readiness
+GET  /api/v1/domains/{domain_id}/rootdse
+POST /api/v1/users:resolve
+POST /api/v1/groups:resolve
+GET  /api/v1/users/{object_guid}
+GET  /api/v1/groups/{object_guid}
+POST /api/v1/users:search
+POST /api/v1/groups:search
+GET  /api/v1/groups/{object_guid}/members
+
+POST /api/v1/groups/{group_guid}/members:add
+POST /api/v1/groups/{group_guid}/members:remove
+POST /api/v1/users/{user_guid}:unlock
+POST /api/v1/users/{user_guid}:reset-password
+POST /api/v1/users/{user_guid}:force-password-change
+POST /api/v1/users/{user_guid}:enable
+POST /api/v1/users/{user_guid}:disable
+POST /api/v1/users/{user_guid}:update-attributes
+POST /api/v1/users/{user_guid}:rename
+POST /api/v1/users/{user_guid}:move
+POST /api/v1/users
+DELETE /api/v1/users/{user_guid}
+
+POST /api/v1/groups
+POST /api/v1/groups/{group_guid}:update-attributes
+POST /api/v1/groups/{group_guid}:rename
+POST /api/v1/groups/{group_guid}:move
+DELETE /api/v1/groups/{group_guid}
+
+POST /api/v1/ous
+POST /api/v1/ous/{ou_guid}:rename
+POST /api/v1/ous/{ou_guid}:move
+DELETE /api/v1/ous/{ou_guid}
+
+GET /api/v1/operations/{operation_id}
+POST /api/v1/operations:search
+GET /api/v1/audit/{audit_id}
+POST /api/v1/audit:export
+
+				
+            
+Non deve esistere /ldap, /query, /powershell, /commands, /shell o un endpoint generico PATCH /objects/{id}.
+
+8.4 Esempio request sincrona
+json
+
+
+                
+					
+{
+  "schema_version": "1.0",
+  "capability": "group.member.add",
+  "customer_id": "customer-lab",
+  "tenant_id": "tenant-lab",
+  "connector_id": "connector-lab-01",
+  "forest_id": "forest-lab",
+  "domain_id": "domain-lab",
+  "target": {
+    "object_type": "GROUP",
+    "object_guid": "7e565f72-8274-4cb8-b77a-7dad17a1b432"
+  },
+  "parameters": {
+    "member": {
+      "object_type": "USER",
+      "object_guid": "91faf0e8-cfb6-49ea-80a7-e621986443f8"
+    }
+  },
+  "dry_run": false,
+  "expected_version": "opaque-version-token",
+  "requested_at": "2026-01-15T10:00:00Z",
+  "expires_at": "2026-01-15T10:05:00Z",
+  "nonce": "nonce-example-only",
+  "approval_context": {
+    "approval_id": "approval-123",
+    "approved_by": ["identity-approver"],
+    "approved_at": "2026-01-15T09:59:00Z"
+  }
+}
+
+				
+            
+8.5 Esempio response verificata
+json
+
+
+                
+					
+{  "operation_id": "op-01JEXAMPLE",
+  "state": "AD_VERIFIED",
+  "disposition": "APPLIED",  "target_object_guid": "7e565f72-8274-4cb8-b77a-7dad17a1b432",  "changed_fields": ["member"],
+  "source_dc": "dc-reference-redacted",
+  "verification_evidence": {
+    "verification_type": "GROUP_MEMBERSHIP_PRESENT",
+    "object_guid": "7e565f72-8274-4cb8-b77a-7dad17a1b432",
+    "matched": true,
+    "observed_at": "2026-01-15T10:00:02Z",
+    "redaction_applied": true
+  }
+}
+
+				
+            
+8.6 Esempio risposta asincrona
+json
+
+
+                
+					
+{
+  "operation_id": "op-01JASYNC",
+  "state": "RECEIVED",  "status_url": "/api/v1/operations/op-01JASYNC"
+}
+
+				
+            
+Usare 202 solo se l'operazione è stata realmente accodata.
+
+8.7 Error taxonomy stabile
+Codice dominio	Categoria	HTTP	Retry
+REQUEST_INVALID	Validation	400	No
+PAYLOAD_TOO_LARGE	Validation	413	No
+AUTHENTICATION_FAILED	Authentication	401	No
+CALLER_FORBIDDEN	Authorization	403	No
+TENANT_BINDING_MISMATCH	Authorization	403	No
+REPLAY_DETECTED	Authentication	409	No
+CAPABILITY_NOT_ALLOWED	Policy	403	No
+TARGET_OUT_OF_SCOPE	Policy	403	No
+PROTECTED_TARGET	Policy	403	No
+APPROVAL_REQUIRED	Policy	409	No
+TARGET_NOT_FOUND	Not found	404	No
+AMBIGUOUS_TARGET	Ambiguous	409	No
+IDEMPOTENCY_COLLISION	Conflict	409	No
+CONCURRENT_MODIFICATION	Concurrency	409	Dipende
+LDAP_CONSTRAINT_VIOLATION	Conflict	409	No
+LDAP_INSUFFICIENT_ACCESS	Authorization	403	No
+LDAP_UNAVAILABLE	Dependency	503	Sì
+LDAP_TIMEOUT	Timeout	504	Sì
+LDAPS_CERTIFICATE_INVALID	Dependency	503	No
+AD_COMMITTED_VERIFICATION_FAILED	Verification	502	Manuale
+RATE_LIMITED	Rate limit	429	Sì
+INTERNAL_ERROR	Internal	500	No automatico
+8.8 Mapping LDAP → dominio
+L'adapter deve mappare usando:
+
+result code LDAP numerico;
+eventuali subcode AD strutturati;
+tipo di operazione;
+stato della connessione;
+fase resolve, preflight, commit o verify.
+Il testo diagnostico libero può essere conservato solo in log protetti e redatti; non deve guidare il contratto né essere restituito direttamente.
+
+9. Piano di implementazione sequenziale
+Regole comuni a tutti gli step
+Ogni feature deve avere branch dedicato, ADR prima del codice, test, implementation document, Conventional Commit e PR piccola. Sopra circa 500 righe modificate si deve valutare lo split. <source>01KTNRJF51BDS5193TCF7PHEED</source>
+
+I fix richiedono root cause, test di regressione che fallisca prima della correzione e modifica minima. <source>01KTNQQDRHNB7RARTTRV6291QJ</source>
+
+I refactor devono dichiarare scope, non-obiettivi ed exit criteria e non cambiare il comportamento. <source>01KTNQQDTHWPC2BPD8955YWZ5K</source>
+
+Commenti e TODO devono spiegare motivo, impatto e condizione di rimozione, non narrare il codice. <source>01KTNQQDWFAXH49RPA0C8VMS1K</source>
+
+Quality gate standard:
+
+bash
+
+
+                
+					
+uv sync --frozen --all-groups
+uv run ruff format --check .
+uv run ruff check .
+uv run mypy src tests
+uv run pytest tests/unit tests/contract --cov=src/mwa_ad_connector --cov-report=term-missing --cov-fail-under=80
+
+				
+            
+Step 0 — ADR iniziali, threat model, provenance e contratti
+Obiettivo: congelare boundary, rischi e decisioni prima del codice.
+Dipendenze: nessuna.
+Branch: docs/step-0-foundation.
+ADR/documenti: ADR architettura, outbound-only, identity strategy, source anchor configurabile, capability API, state machine, threat model, OpenRSAT provenance, backlog e glossary.
+File/componenti: docs/architecture/*, docs/adr/0001-*.md–0008-*.md, docs/provenance/openrsat-review.md.
+Attività esatte:
+Documentare asset, attori, trust boundary e abuso.
+Registrare che OpenRSAT è reference comportamentale, non sorgente da tradurre. <source>01M2N5AZ1693398GPG8D9FY904</source>
+Definire capability MVP/GA/Post-GA.
+Definire stati e responsabilità cloud/on-prem.
+Registrare licenza e compatibilità; non copiare codice finché non approvato.
+Test: markdown links, lint documentale, review threat model.
+Quality gate: validatore Markdown e secret scan.
+Accettazione: ADR approvati; nessuna decisione critica implicita.
+Deliverable: baseline documentale versionata.
+Non fare: bootstrap applicativo o selezione non provata della libreria LDAP.
+Checkpoint umano: approvazione architetto, security e legal/provenance.
+Step 1 — Bootstrap repository e CI
+Obiettivo: repository eseguibile con quality gate bloccanti.
+Dipendenze: Step 0 approvato.
+Branch: chore/step-1-bootstrap.
+ADR/documenti: implementation doc bootstrap, contribution guide.
+File/componenti: pyproject.toml, uv.lock, package src, test smoke, pre-commit, GitHub Actions.
+Attività: configurare Python 3.11+, FastAPI, Pydantic v2/Settings, Ruff 120, mypy strict, pytest, coverage, secret scanning e dependency audit.
+Test: import package, health placeholder non operativo, settings smoke.
+Quality gate: comandi standard più uv lock --check.
+Accettazione: clone pulito, uv sync --frozen, CI verde.
+Deliverable: skeleton privo di logica LDAP.
+Non fare: endpoint business o adapter LDAP.
+Checkpoint umano: review CI, licensing dependencies e branch protection.
+Step 2 — Modelli di dominio, errori e porte con fake in-memory
+Obiettivo: creare contratti indipendenti da FastAPI e LDAP.
+Dipendenze: Step 1.
+Branch: feat/step-2-domain-ports.
+ADR/documenti: ADR domain contracts; docs/implementation/step-2.md.
+File/componenti: domain/*, application/ports/*, tests/fakes/directory_gateway.py.
+Attività: modellare entità, enum, invarianti, error taxonomy e protocolli async.
+Test: invarianti, state enum, error mapping preliminare, contract del fake.
+Quality gate: standard con coverage preferibile 90% sul domain.
+Accettazione: domain non importa FastAPI, storage o LDAP; fake supporta scenari deterministici.
+Deliverable: porte stabili per lo spike.
+Non fare: simulare dettagli non verificati della libreria LDAP.
+Checkpoint umano: approvazione dei contratti e naming.
+Step 3 — Spike LDAP su VM/DC e scelta adapter
+Obiettivo: selezionare la libreria tramite evidenze.
+Dipendenze: Step 2 e laboratorio minimo disponibile.
+Branch: spike/step-3-ldap-adapter.
+ADR/documenti: ADR scelta libreria; matrice primitive; report riproducibilità.
+File/componenti: spikes/ldap/, test esclusi dal package produttivo.
+Attività: provare LDAPS, cert validation, simple bind sotto TLS, Kerberos, gMSA se disponibile, paging, Add/Modify/Delete/ModifyDN, unicodePwd, binary attrs, controlli AD, timeout e cancel.
+Test: prove positive e negative su DC; packet/log review senza secret.
+Quality gate: lint/type check dello spike; report firmato.
+Accettazione: matrice supportato/non supportato/incerto con evidenze; adapter scelto o stop condition.
+Deliverable: ADR e backlog dei gap.
+Non fare: dichiarare supporto sulla sola documentazione marketing.
+Checkpoint umano: security e AD engineer approvano la scelta.
+Step 4 — Configurazione sicura e profili dominio/foresta
+Obiettivo: configurazione fail-fast e boundary espliciti.
+Dipendenze: Step 3.
+Branch: feat/step-4-secure-config.
+ADR/documenti: ADR secrets/config profiles.
+File/componenti: config/settings.py, profiles.py, validation.py, template.
+Attività: modellare customer/tenant/connector/forest/domain, Base DN, OU, DC, trust store, auth mode, source anchor strategy e feature flags.
+Test: config mancante, boundary duplicati, path invalidi, secret redaction.
+Quality gate: standard.
+Accettazione: startup fallisce prima del bind per config incoerente; nessun default pericoloso.
+Deliverable: schema configurazione documentato.
+Non fare: inserire credenziali o DN cliente.
+Checkpoint umano: approvazione del profilo lab.
+Step 5 — Adapter LDAP read-only
+Obiettivo: discovery affidabile e letture tipizzate.
+Dipendenze: Step 4.
+Branch: feat/step-5-ldap-read.
+ADR/documenti: connection lifecycle e DC pinning.
+File/componenti: infrastructure/ldap/connection.py, discovery.py, adapter.py, controls.py, mappings.py.
+Attività: RootDSE, capability discovery, paging, binary attrs, timeout, pool controllato e pinning.
+Test: unit mapping; contract fake/real; integration paging e GUID binary.
+Quality gate: standard più integration opt-in.
+Accettazione: nessuna perdita paging; cert invalidi rifiutati; DC riportato.
+Deliverable: DirectoryGateway read-only reale.
+Non fare: mutazioni.
+Checkpoint umano: review dei risultati sul laboratorio.
+Step 6 — Identity resolution, mapping ed escaping
+Obiettivo: risoluzione deterministica e sicura.
+Dipendenze: Step 5.
+Branch: feat/step-6-identity-resolution.
+ADR/documenti: resolution precedence e ambiguity policy.
+File/componenti: resolver service, filters.py, mapping user/group.
+Attività: implementare GUID lookup e identificatori allowlisted; escaping LDAP; query profile predefiniti; DN refresh.
+Test: LDAP injection, Unicode, zero/uno/molti risultati, rename tra due resolve.
+Quality gate: standard più security tests.
+Accettazione: nessun input diventa filtro raw; ambiguità sempre rifiutata.
+Deliverable: read/resolve capability interne.
+Non fare: euristiche “first match”.
+Checkpoint umano: approvazione identificatori consentiti.
+Step 7 — Policy engine e preflight
+Obiettivo: bloccare operazioni fuori scope prima di LDAP write.
+Dipendenze: Step 6.
+Branch: feat/step-7-policy-engine.
+ADR/documenti: policy precedence e protected targets.
+File/componenti: policy/*, capability catalog.
+Attività: scope BaseDN/OU, object class/attribute allowlist, protected groups/accounts, risk, approval, dry-run.
+Test: fuori OU, gruppo privilegiato, capability ignota, approval mancante, dry-run.
+Quality gate: standard con 90% preferibile.
+Accettazione: deny by default; decisioni spiegabili e auditabili.
+Deliverable: preflight senza mutazioni.
+Non fare: affidarsi solo alle ACL AD.
+Checkpoint umano: security e identity team approvano le policy.
+Step 8 — Autenticazione, autorizzazione e anti-replay
+Obiettivo: autenticare e legare ogni richiesta al tenant/connettore.
+Dipendenze: Step 7.
+Branch: feat/step-8-caller-security.
+ADR/documenti: JWT/mTLS trust e anti-replay.
+File/componenti: security/*, middleware payload/rate limit.
+Attività: JWT issuer/audience, mTLS quando applicabile, nonce TTL, timestamp skew, tenant binding, scope checks, payload limits.
+Test: cert scaduto/non trusted, replay, tenant mismatch, token errato, oversized payload, rate limit.
+Quality gate: standard più security suite.
+Accettazione: fail-closed; nessun fallback anonimo.
+Deliverable: CallerContext verificato.
+Non fare: auth basata su header non firmati.
+Checkpoint umano: security review formale.
+Step 9 — Operation store, idempotenza e audit
+Obiettivo: garantire transizioni atomiche, dedup e tracciabilità.
+Dipendenze: Step 8.
+Branch: feat/step-9-operations-audit.
+ADR/documenti: storage, retention, tamper evidence.
+File/componenti: persistence, state machine, idempotency, audit, redaction.
+Attività: unique key, canonical request hash, state transitions, before/requested/after, hash chain, export.
+Test: collisione key, crash tra stati, audit tampering, redaction, concurrent claims.
+Quality gate: standard più migration test.
+Accettazione: una sola esecuzione per key; alterazioni audit rilevabili.
+Deliverable: operation/audit foundation.
+Non fare: salvare password o token.
+Checkpoint umano: approvazione security/compliance.
+Step 10 — Vertical slice group add/remove
+Obiettivo: prima mutazione E2E verificata.
+Dipendenze: Step 9.
+Branch: feat/step-10-group-membership.
+ADR/documenti: membership concurrency e compensation.
+File/componenti: service, gateway mutation, API schemas/routes, tests.
+Attività: resolve GUID→DN, preflight, cycle/nesting checks, mutate, read-after-write stesso DC, no-op idempotente.
+Test: add/remove, duplicato, membership concorrente, rename, ACL insufficienti, privileged group, commit poi verifica fallita.
+Quality gate: standard più AD integration.
+Accettazione: stato AD_VERIFIED solo con prova; nessuna doppia mutation.
+Deliverable: prima capability produttiva.
+Non fare: CRUD gruppi.
+Checkpoint umano: demo E2E e audit review.
+Step 11 — Unlock account
+Obiettivo: unlock capability controllata.
+Dipendenze: Step 10.
+Branch: feat/step-11-account-unlock.
+ADR/documenti: account protection.
+File/componenti: account service, adapter method, route/schema.
+Attività: preflight target, mutate lockoutTime, verify.
+Test: locked/unlocked, protected, ACL denied, concurrent disable.
+Quality gate: standard più integration.
+Accettazione: già unlocked=NO_OP; nessun effetto su altri bit.
+Deliverable: unlock verificato.
+Non fare: reset password.
+Checkpoint umano: AD engineer review.
+Step 12 — Reset password e force-change
+Obiettivo: reset sicuro senza leakage.
+Dipendenze: Step 11 e LDAPS validato.
+Branch: feat/step-12-password-reset.
+ADR/documenti: secret transport/handling.
+File/componenti: password service, secret schema, LDAP mutation.
+Attività: field secret protetto, memoria limitata, unicodePwd, pwdLastSet, audit solo metadata.
+Test: password policy, LDAPS assente, cert invalido, secret leakage scan, protected account.
+Quality gate: standard più log capture scan.
+Accettazione: password assente da log/audit/response/exception; canale non protetto rifiutato.
+Deliverable: reset e force-change.
+Non fare: retry indiscriminati del reset.
+Checkpoint umano: security sign-off obbligatorio.
+Step 13 — Update attributi utente allowlisted
+Obiettivo: update tipizzato con staged diff.
+Dipendenze: Step 12.
+Branch: feat/step-13-user-attributes.
+ADR/documenti: attribute allowlist/schema.
+File/componenti: user service, comparators, schema metadata.
+Attività: diff Add/Delete/Replace, multivalue separato, expected version, read-after-write.
+Test: no-op, schema mismatch, multivalue, concurrent update, forbidden attr.
+Quality gate: standard più integration.
+Accettazione: nessuna modifica fuori allowlist; diff minimo.
+Deliverable: update controllato.
+Non fare: generic PATCH.
+Checkpoint umano: approvazione allowlist per profilo.
+Step 14 — Enable/disable e operazioni distruttive policy-gated
+Obiettivo: introdurre protezioni e approval context.
+Dipendenze: Step 13.
+Branch: feat/step-14-account-state.
+ADR/documenti: destructive operation policy.
+File/componenti: account service, approval rules.
+Attività: bitwise-safe update, protected/service account checks, reason obbligatorio.
+Test: approval assente/scaduta, protected target, concurrent UAC change.
+Quality gate: standard.
+Accettazione: nessun overwrite accidentale di bit non gestiti.
+Deliverable: enable/disable.
+Non fare: delete user.
+Checkpoint umano: identity/security approval.
+Step 15 — CRUD controllato user, group e OU
+Obiettivo: completare capability GA di lifecycle.
+Dipendenze: Step 14.
+Branch: suddividere in feat/step-15a-user-lifecycle, 15b-group-lifecycle, 15c-ou-lifecycle.
+ADR/documenti: naming, collision, compensation e deletion.
+File/componenti: servizi e route dedicate.
+Attività: create, rename, move, delete con policy, objectGUID verification e compensazioni.
+Test: naming collision, non-empty OU, rename concorrente, move fuori scope, delete protected.
+Quality gate: standard più full AD integration.
+Accettazione: ogni sub-PR focalizzata; delete sempre approval-gated.
+Deliverable: CRUD controllato.
+Non fare: ACL delegation.
+Checkpoint umano: approvare ogni sub-slice separatamente.
+Step 16 — Worker outbound e trasporto sostituibile
+Obiettivo: elaborare comandi senza porte inbound cliente.
+Dipendenze: Step 10 minimo; preferibilmente Step 15.
+Branch: feat/step-16-outbound-worker.
+ADR/documenti: command envelope, retry e DLQ.
+File/componenti: transport port, worker, relay adapter, retry, DLQ.
+Attività: receive lock, dedup, backoff con jitter, poison message, result publish, graceful shutdown.
+Test: duplicate delivery, crash dopo commit, malformed message, DLQ, transport outage.
+Quality gate: standard più resilience.
+Accettazione: at-least-once non causa doppia mutazione; core non importa SDK trasporto.
+Deliverable: worker outbound-only.
+Non fare: rendere Service Bus parte del domain.
+Checkpoint umano: cloud/platform review.
+Step 17 — Health, readiness e osservabilità
+Obiettivo: rendere il servizio operabile.
+Dipendenze: Step 16.
+Branch: feat/step-17-observability.
+ADR/documenti: telemetry/redaction.
+File/componenti: health routes, metrics, structured logging, tracing.
+Attività: timestamp/ticket/component/severity/result, operation correlation, metrics SLA-neutral, OTel hooks.
+Test: redaction, cardinality, dependency degradation, no secret.
+Quality gate: standard.
+Accettazione: health non sensibile; readiness fail se non sicuro operare.
+Deliverable: dashboard-ready telemetry.
+Non fare: loggare payload completi.
+Checkpoint umano: operations/security review.
+Step 18 — Packaging e hardening host
+Obiettivo: installazione riproducibile.
+Dipendenze: Step 17.
+Branch: feat/step-18-packaging.
+ADR/documenti: Windows Service vs container; hardening guide.
+File/componenti: packaging, installer, config bootstrap.
+Attività: service identity, gMSA, file ACL, certificate store, restart policy, least privilege.
+Test: install/uninstall lab, restart, config invalid, service account rotation.
+Quality gate: package signing checks dove disponibili.
+Accettazione: nessuna password in installer; servizio non amministratore.
+Deliverable: artefatto installabile.
+Non fare: scegliere container se gMSA/Kerberos non validati.
+Checkpoint umano: Windows/platform approval.
+Step 19 — Laboratorio E2E completo
+Obiettivo: convalidare il prodotto contro AD reale.
+Dipendenze: Step 18.
+Branch: test/step-19-e2e-lab.
+ADR/documenti: lab topology, evidence report.
+File/componenti: test E2E e script non distruttivi.
+Attività: eseguire matrice positiva/negativa, snapshot/reset controllato, account delegato e gMSA.
+Test: tutte le capability MVP e failure mode obbligatorie.
+Quality gate: full suite e artifact report.
+Accettazione: ambiente riproducibile; nessun uso di Domain Admin dal servizio.
+Deliverable: evidence pack.
+Non fare: usare dominio reale.
+Checkpoint umano: go/no-go MVP tecnico.
+Step 20 — Integrazione cloud MWA
+Obiettivo: collegare Action Catalog, AuthorityResolver, HITL e convergenza Entra.
+Dipendenze: Step 19.
+Branch: nei repository corretti, separato per catalog/routing/poller.
+ADR/documenti: authority matrix e state mapping.
+File/componenti: Action Catalog, resolver, publisher, result consumer, Entra poller.
+Attività: routing deterministico per target+capability+attributo, HITL, ticket lock, dedup, timeout configurabile.
+Test: Entra route, on-prem route, hybrid, unsupported, timeout sync, duplicate result.
+Quality gate: gate dei repository MWA.
+Accettazione: solo Trusted Agent invoca; cloud non invia LDAP raw; Entra convergence separata.
+Deliverable: integrazione basilare MWA.
+Non fare: bypassare catalogo o team RBAC. <source>01KTNQJBGXXERDHY1QYXV4B67R</source>
+Checkpoint umano: product, identity e MWA architecture approval.
+Step 21 — Resilienza, performance, backup e recovery
+Obiettivo: validare failure recovery e capacità.
+Dipendenze: Step 20.
+Branch: test/step-21-resilience.
+ADR/documenti: SLO inputs senza tempi inventati; backup/restore.
+File/componenti: chaos tests, load tests, runbook.
+Attività: DC outage, transport outage, store restore, retry budget, connection pressure.
+Test: concurrency, chaos, performance, backup integrity.
+Quality gate: soglie definite da misure e requisiti approvati.
+Accettazione: nessuna doppia mutazione; recovery documentato.
+Deliverable: resilience report.
+Non fare: inventare throughput target.
+Checkpoint umano: operations go/no-go.
+Step 22 — Release candidate e pilot
+Obiettivo: produrre RC, rollout e rollback controllati.
+Dipendenze: Step 21.
+Branch: release/v1.0.0-rc.1.
+ADR/documenti: release notes, migration, pilot, rollback.
+File/componenti: versioning, SBOM, signed artifacts.
+Attività: semantic versioning, freeze, dependency scan, pilot allowlist.
+Test: clean install, upgrade, rollback, smoke post-deploy.
+Quality gate: CI completamente verde e security gate.
+Accettazione: runbook e owner operativi nominati.
+Deliverable: RC installabile.
+Non fare: rollout generalizzato senza pilot.
+Checkpoint umano: CAB/security/product approval.
+Step 23 — Moduli avanzati post-MVP
+Obiettivo: valutare funzionalità ad alto rischio senza abilitarle automaticamente.
+Dipendenze: release stabile.
+Branch: uno spike/feature separato per modulo.
+ADR/documenti: ADR e threat model dedicati.
+File/componenti: plugin/moduli isolati.
+Attività: valutare nTSecurityDescriptor, deleghe template-based, multi-forest complesso, HA e password writeback specifico.
+Test: lab dedicato e negative security estese.
+Quality gate: superiore ai moduli ordinari, con review manuale.
+Accettazione: feature flag default off; nessun impatto sull'MVP.
+Deliverable: moduli opzionali approvati.
+Non fare: endpoint ACL generico o attivazione di default.
+Checkpoint umano: approvazione security executive e identity architecture.
+10. Matrice di test completa
+Categoria	Obiettivo	Test obbligatori
+Unit	Invarianti e logica pura	Modelli, state machine, policy, redaction, staged diff, error mapping
+Contract	Equivalenza porta/adapter	Fake e LDAP adapter rispettano gli stessi contratti
+Integration AD	Primitive reali	RootDSE, paging, binary attrs, GUID resolution, mutations, ModifyDN, password
+E2E	Flusso completo	Envelope→auth→policy→store→LDAP→verify→result
+Security	Defense in depth	JWT/mTLS, replay, injection, tenant binding, payload limit, leakage
+Concurrency	Evitare lost update	Idempotency race, membership race, rename tra resolve/execute
+Resilience	Failure recovery	DC unavailable, timeout, worker crash, DLQ, store recovery
+Performance	Stabilità sotto carico	Paging grande, pool LDAP, parallel read, mutation throttling
+Cloud integration	Routing e convergenza	AuthorityResolver, HITL, Entra timeout/escalation
+10.1 Test negativi obbligatori
+target fuori OU gestita;
+target sotto Base DN non consentita;
+gruppo privilegiato;
+account privilegiato o service account protetto;
+ACL AD insufficienti;
+certificato LDAPS non valido, scaduto o non trusted;
+JWT scaduto, issuer o audience errati;
+replay di nonce;
+timestamp fuori finestra;
+tenant mismatch;
+connector mismatch;
+idempotency collision con payload differente;
+consegna duplicata dello stesso comando;
+rename/move tra resolve ed execute;
+modifica concorrente della membership;
+expected_version obsoleto;
+DC unavailable prima del commit;
+timeout ambiguo durante il commit;
+commit riuscito ma verifica fallita;
+lettura di verifica su DC diverso quando pinning è richiesto;
+sync Entra in timeout senza hardcoding;
+LDAP injection su ogni identificatore;
+filtro raw nel payload;
+attributo non allowlisted;
+object class non allowlisted;
+payload oversized;
+page token alterato;
+secret leakage in log, audit, tracing, exception e response;
+poison message;
+operation store unavailable;
+audit append failure;
+clock skew;
+approval mancante, scaduta o per capability diversa;
+delete OU non vuota;
+nested group cycle;
+password non conforme alla policy;
+reset password su canale non protetto.
+11. Setup dettagliato del laboratorio
+Usare esclusivamente un dominio di laboratorio isolato. Non eseguire questi passaggi su un dominio aziendale o di produzione.
+
+11.1 Topologia minima
+Una VM Windows Server supportata:
+promossa a Domain Controller;
+DNS integrato;
+snapshot iniziale pulito.
+Un host applicativo domain-joined separato, preferibile per test Kerberos/gMSA.
+Opzionale:
+secondo DC per replica/failure test;
+seconda VM per Entra Connect o Cloud Sync;
+relay/bus test.
+Lo studio OpenRSAT propone un laboratorio con Windows Server/DC, OU test, LDAPS e account delegato. <source>01M2N5AZ1693398GPG8D9FY904</source>
+
+11.2 Dominio e OU
+Creare un dominio lab non instradato verso produzione, per esempio:
+
+text
+
+
+                
+					
+lab.example.test
+
+				
+            
+Struttura:
+
+text
+
+
+                
+					
+DC=lab,DC=example,DC=test
+├── OU=Managed
+│   ├── OU=Users
+│   ├── OU=Groups
+│   ├── OU=ServiceAccounts
+│   └── OU=Lifecycle
+└── OU=Unmanaged
+    ├── OU=Users
+    └── OU=Groups
+
+				
+            
+11.3 Oggetti test
+Creare:
+
+utenti standard abilitati e disabilitati;
+utente lockable;
+utente destinato al reset password;
+utente con attributi Unicode;
+utente in Unmanaged;
+gruppi security globali, universal e domain local;
+gruppi nested senza ciclo;
+scenario di ciclo potenziale;
+gruppo protetto simulato;
+riferimenti reali a gruppi privilegiati built-in solo per test di rifiuto;
+OU vuota e OU non vuota;
+nomi che causano collisione;
+attributi multivalore.
+Gli script devono:
+
+controllare il dominio target prima di agire;
+richiedere conferma esplicita per reset;
+limitarsi alla OU lab;
+essere idempotenti dove possibile;
+non cancellare il dominio;
+non modificare gruppi privilegiati reali.
+11.4 Identità del servizio
+Fase A — Service account dedicato
+account non interattivo;
+nessuna membership amministrativa;
+deny logon interattivo dove appropriato;
+deleghe esclusivamente sulle OU gestite;
+secret in vault o meccanismo protetto;
+rotazione documentata.
+Fase B — gMSA
+creare gMSA nel lab;
+autorizzare solo l'host applicativo;
+verificare installazione e acquisizione automatica credenziali;
+eseguire il servizio con gMSA;
+ripetere bind Kerberos, restart e renewal test.
+Il service account/gMSA non deve mai essere Domain Admin. Least privilege e defense in depth sono requisiti espliciti. <source>01KTNQKMFT27T07063HYTMNFSA</source>
+
+11.5 Deleghe minime
+Delegare separatamente:
+
+lettura degli attributi necessari;
+write member sui gruppi gestiti;
+unlock account;
+reset password;
+write pwdLastSet;
+write controllato di userAccountControl;
+attributi allowlisted;
+create/delete child per object class solo nelle OU autorizzate;
+ModifyDN/move dove richiesto.
+Non concedere GenericAll, controllo del dominio o membership amministrative salvo che una prova di laboratorio dimostri un requisito e venga aperta una stop condition.
+
+11.6 PKI e LDAPS
+Predisporre una CA esclusivamente lab o una PKI di test approvata.
+Emettere un certificato server authentication per il DC.
+Verificare SAN e hostname.
+Installare la trust chain sull'host connettore.
+Provare:
+certificato valido;
+hostname mismatch;
+CA non trusted;
+certificato scaduto;
+revoca, se supportata dall'ambiente.
+Catturare solo metadata e non password.
+11.7 Snapshot e reset
+Snapshot raccomandati:
+
+S0: OS pulito;
+S1: DC/DNS configurati;
+S2: OU e oggetti seed;
+S3: LDAPS funzionante;
+S4: deleghe service account;
+S5: gMSA funzionante;
+S6: opzionale Entra Connect.
+Il restore deve essere coordinato per evitare inconsistenze di snapshot tra più DC. Se la procedura non è riproducibile, fermarsi e richiedere supporto AD.
+
+12. Modello dei permessi
+L'autorizzazione API non sostituisce le ACL AD. Una richiesta deve superare sia capability/scope applicativi sia il controllo nativo AD.
+
+Capability	Scope OAuth/app	ACL AD minima	Target scope	Approval/risk
+Health/readiness	ad.health.read	Nessuna o read minimo	Connector	Nessuna/basso
+RootDSE/discovery	ad.discovery.read	Read RootDSE/schema necessario	Dominio configurato	Nessuna/basso
+User read/resolve	ad.user.read	Read attributi allowlisted	Base DN/OU	Nessuna/basso
+Group read/resolve	ad.group.read	Read attributi allowlisted	Base DN/OU	Nessuna/basso
+Group members read	ad.group.members.read	Read member	Gruppi gestiti	Nessuna/basso
+Group add/remove	ad.group.member.write	Write member	Gruppi allowlisted	HITL iniziale/alto
+Unlock	ad.account.unlock	Write lockoutTime	Utenti gestiti	Policy/medio
+Reset password	ad.account.password.reset	Reset password/unicodePwd	Utenti gestiti non protetti	HITL/critico
+Force change	ad.account.password.force_change	Write pwdLastSet	Utenti gestiti	HITL/alto
+Enable/disable	ad.account.state.write	Write proprietà necessarie UAC	Utenti gestiti	HITL/alto
+User attrs update	ad.user.attributes.write	Write soli attributi delegati	Utenti gestiti	Dipende dall'attributo
+User create	ad.user.create	Create user child e attrs necessari	OU utenti gestita	HITL/alto
+User rename/move	ad.user.lifecycle.write	ModifyDN/move	OU sorgente/destinazione gestite	HITL/alto
+User delete	ad.user.delete	Delete child	Lifecycle OU	Approval forte/critico
+Group CRUD	scope specifici ad.group.*	Create/write/ModifyDN/delete group	OU gruppi gestita	HITL alto/critico
+OU CRUD	scope specifici ad.ou.*	Create/ModifyDN/delete OU	Sotto root gestita	Approval forte/critico
+Operation read	ad.operation.read	Nessuna	Stesso tenant/connector	Basso
+Audit read/export	ad.audit.read/ad.audit.export	Nessuna	Boundary compliance	Approval/alto
+ACL delegation post-GA	ad.delegation.template.apply	Diritti specifici approvati	Scope dedicato	Two-person/critico
+13. Definition of Done
+13.1 Definition of Done globale
+ADR scritto e approvato prima del codice per ogni decisione significativa.
+Python 3.11+ e dipendenze bloccate con uv.lock.
+Docstring Google Style per API pubbliche. <source>01KTNQQE0AMCKZ3ZGEPC2JWZ5K</source>
+Ruff formatter/linter con line length 120.
+mypy strict senza esclusioni indiscriminate.
+Type hint completi.
+Nessuna chiamata blocking diretta dentro codice async; usare adapter/thread strategy esplicita se la libreria è sincrona. <source>01KTNQQE0AMCKZ3ZGEPC2JWZ5K</source>
+Test unit/integration separati.
+Coverage almeno 80% sul nuovo codice; preferibile 90% sui moduli critici.
+Nessun secret nel repository, log, audit, response o fixture.
+Structured logging senza print.
+Eccezioni di dominio mappate centralmente in HTTP.
+CI completamente verde e bloccante.
+Dependency e secret scan verdi.
+Implementation document aggiornato.
+File idealmente sotto 400 righe.
+Conventional Commits.
+PR piccole e focalizzate.
+Runbook aggiornato per cambi operativi.
+Threat model aggiornato quando cambia un trust boundary.
+Test E2E riproducibile per capability mutative.
+Audit e redaction verificati.
+Nessun endpoint generico vietato.
+13.2 Definition of Done per PR
+ Branch dedicato.
+ Scope e non-obiettivi dichiarati.
+ ADR presente o motivazione “ADR non necessaria”.
+ Piano file-level approvato.
+ Modifica con singola responsabilità.
+ Test che coprono happy path e failure path.
+ Regressione aggiunta per ogni fix.
+ Ruff format/check verdi.
+ mypy strict verde.
+ pytest e coverage verdi.
+ Nessun secret o dato cliente.
+ Documentazione implementativa aggiornata.
+ Commit Conventional Commits.
+ PR description con rischio, rollback e prove.
+ Checkpoint umano completato.
+14. Roadmap per milestone
+14.1 MVP
+Include obbligatoriamente:
+
+read e resolve user/group;
+RootDSE, discovery, paging e binary attrs;
+group add/remove;
+unlock account;
+reset password e force-change;
+policy engine;
+protected targets;
+authn/authz;
+mTLS/JWT quando applicabile;
+anti-replay e tenant binding;
+audit;
+idempotenza;
+operation state machine;
+worker outbound-only;
+health/readiness;
+read-after-write sullo stesso DC;
+integrazione MWA basilare;
+HITL iniziale per operazioni rischiose.
+Dipendenze critiche: spike LDAP, LDAPS, Kerberos/gMSA, operation store, policy, laboratorio e cloud envelope.
+
+14.2 GA
+Aggiunge:
+
+update attributi allowlisted;
+enable/disable;
+CRUD controllato user/group/OU;
+hardening packaging;
+resilienza e recovery;
+osservabilità completa;
+performance validation;
+rollout e rollback;
+eventuale HA solo dopo requisiti misurabili e ADR.
+14.3 Post-GA
+nTSecurityDescriptor e delegation template-based;
+multi-forest complesso;
+HA avanzata;
+source anchor discovery più sofisticata;
+password writeback-specific handling;
+ulteriori trasporti;
+policy cliente-specifiche modulari.
+Tutti i moduli avanzati devono essere disabilitati di default.
+
+15. Checklist pronta per issue tracker
+Epic 0 — Governance e architettura
+ Story: creare ADR architettura esagonale
+ Story: creare threat model
+ Story: documentare provenance/licenza OpenRSAT
+ Story: definire capability catalog
+ Story: definire state machine cloud/on-prem
+ Story: definire source anchor configurabile
+ Story: approvare non-obiettivi e API vietate
+Epic 1 — Repository e qualità
+ Story: bootstrap Python 3.11+ con uv
+ Story: configurare FastAPI e Pydantic v2
+ Story: configurare Ruff line 120
+ Story: configurare mypy strict
+ Story: configurare pytest e coverage
+ Story: configurare pre-commit e CI bloccante
+ Story: configurare secret/dependency scanning
+Epic 2 — Domain e porte
+ Story: implementare modelli di dominio
+ Story: implementare error taxonomy
+ Story: definire DirectoryGateway
+ Story: definire operation/audit/transport ports
+ Story: creare fake in-memory e contract tests
+Epic 3 — Spike LDAP
+ Story: validare LDAPS
+ Story: validare Kerberos
+ Story: validare gMSA
+ Story: validare paging
+ Story: validare ModifyDN
+ Story: validare unicodePwd
+ Story: validare binary attrs
+ Story: validare controlli AD
+ Story: approvare adapter LDAP
+Epic 4 — Configurazione e discovery
+ Story: profili customer/tenant/connector
+ Story: profili forest/domain
+ Story: Base DN/OU allowlist
+ Story: source anchor strategy
+ Story: startup validation
+ Story: RootDSE e domain capabilities
+ Story: DC selection e pinning
+Epic 5 — Resolution e policy
+ Story: resolve per objectGUID
+ Story: resolve per identificatori allowlisted
+ Story: ambiguity handling
+ Story: LDAP escaping e injection tests
+ Story: query profiles e paging
+ Story: policy deny-by-default
+ Story: protected targets
+ Story: dry-run/preflight
+ Story: approval policy
+Epic 6 — Security
+ Story: JWT validation
+ Story: mTLS validation
+ Story: anti-replay nonce/timestamp
+ Story: tenant/connector binding
+ Story: rate limiting
+ Story: payload size limiting
+ Story: secret redaction
+ Story: security negative suite
+Epic 7 — Operations e audit
+ Story: operation store
+ Story: state machine atomica
+ Story: idempotency reservation
+ Story: collision detection
+ Story: audit before/requested/after
+ Story: tamper evidence
+ Story: audit retrieval/export
+ Story: retention e recovery
+Epic 8 — Capability MVP
+ Story: group member add
+ Story: group member remove
+ Story: nested group/cycle checks
+ Story: membership verification
+ Story: unlock account
+ Story: reset password
+ Story: force password change
+ Story: read-after-write stesso DC
+Epic 9 — Capability GA
+ Story: update user attrs allowlisted
+ Story: enable account
+ Story: disable account
+ Story: create/rename/move/delete user
+ Story: create/update/rename/move/delete group
+ Story: create/rename/move/delete OU
+ Story: compensazioni controllate
+Epic 10 — Worker e trasporto
+ Story: command envelope v1
+ Story: transport abstraction
+ Story: outbound worker
+ Story: retry/backoff/jitter
+ Story: dedup
+ Story: DLQ
+ Story: poison message handling
+ Story: result publishing
+Epic 11 — Osservabilità e packaging
+ Story: health
+ Story: readiness
+ Story: structured logs
+ Story: metrics
+ Story: OpenTelemetry
+ Story: Windows Service
+ Story: gMSA runtime
+ Story: host hardening
+ Story: installer e config bootstrap
+Epic 12 — Laboratorio ed E2E
+ Story: creare DC lab
+ Story: creare OU Managed/Unmanaged
+ Story: creare fixture users/groups
+ Story: configurare LDAPS
+ Story: delegare service account
+ Story: configurare gMSA
+ Story: eseguire test negativi
+ Story: produrre evidence pack
+Epic 13 — Integrazione MWA
+ Story: Action Catalog entries
+ Story: AuthorityResolver
+ Story: routing Entra/on-prem
+ Story: HITL identity operations
+ Story: command publisher
+ Story: result consumer
+ Story: WAITING_ENTRA_SYNC
+ Story: Entra poller configurabile
+ Story: ENTRA_CONVERGED
+ Story: timeout/escalation ticket
+Epic 14 — Release
+ Story: resilience/chaos suite
+ Story: performance baseline
+ Story: backup/restore
+ Story: operational runbook
+ Story: SBOM e release signing
+ Story: semantic versioning
+ Story: pilot rollout
+ Story: rollback test
+ Story: GA approval
+Epic 15 — Post-GA
+ Story: spike delegation templates
+ Story: spike multi-forest
+ Story: HA architecture
+ Story: password writeback-specific analysis
+ Story: assicurare feature flag default off
+16. Prompt iniziale riutilizzabile per il coding agent
+text
+
+
+                
+					
+Sei il coding agent responsabile della nuova codebase del connettore Active Directory on-premises per MWA.
+
+Esegui esclusivamente lo STEP [NUMERO E TITOLO] del piano operativo approvato.
+
+Regole obbligatorie:
+
+1. Leggi prima:
+   - tutti gli ADR esistenti;
+   - CONTRIBUTING.md;
+   - il threat model;
+   - le linee guida di sicurezza;
+   - il documento di implementazione dello step;
+   - i contratti di dominio e le stop condition.
+
+2. Non implementare funzionalità appartenenti a step successivi, anche se sembrano utili.
+   Se emerge una dipendenza futura, registrala nel backlog o nelle decisioni aperte senza implementarla.
+
+3. Prima di modificare file:
+   - riassumi obiettivo, dipendenze e non-obiettivi dello step;
+   - mostra un piano file-level con file da creare/modificare;
+   - indica test da aggiungere;
+   - segnala ADR mancanti o decisioni non validate;
+   - attendi approvazione se il piano cambia un boundary, un contratto o una decisione di sicurezza.
+
+4. Mantieni:
+   - Python 3.11+;
+   - architettura esagonale/layered;
+   - SRP, DRY e KISS;
+   - file idealmente sotto 400 righe;
+   - type hints completi;
+   - docstring Google Style;
+   - Ruff line length 120;
+   - mypy strict;
+   - nessun secret;
+   - logging strutturato senza print;
+   - compatibilità con i contratti già approvati.
+
+5. Non:
+   - copiare o tradurre meccanicamente OpenRSAT;
+   - aggiungere GUI;
+   - esporre LDAP, PowerShell, shell o PATCH generici;
+   - inventare supporto della libreria LDAP;
+   - introdurre privilegi Domain Admin;
+   - bypassare policy, ACL AD, audit o idempotenza;
+   - assumere che onPremisesImmutableId sia sempre base64(objectGUID);
+   - hardcodare tempi di sincronizzazione Entra.
+
+6. Implementa in incrementi piccoli. Per ogni fix aggiungi prima un test di regressione.
+   Per ogni decisione significativa crea o aggiorna un ADR prima del codice.
+
+7. Esegui almeno:
+   uv sync --frozen --all-groups
+   uv run ruff format --check .
+   uv run ruff check .
+   uv run mypy src tests
+   uv run pytest tests/unit tests/contract --cov=src/mwa_ad_connector --cov-report=term-missing --cov-fail-under=80
+
+8. Esegui anche i test integration/security/E2E previsti dallo step. Se l'ambiente non è disponibile,
+   non simulare il risultato: segnala il test come non eseguito e fermati se è un exit criterion.
+
+9. Aggiorna:
+   - docs/implementation/step-[NUMERO].md;
+   - ADR interessati;
+   - test matrix;
+   - changelog/backlog, se applicabile.
+
+10. Al termine fermati e riporta:
+    - file modificati;
+    - comportamento implementato;
+    - test eseguiti e risultati;
+    - coverage;
+    - lint/type-check;
+    - limiti noti;
+    - rischi residui;
+    - decisioni aperte;
+    - stop condition incontrate;
+    - deliverable pronto per review.
+
+Non iniziare lo step successivo.
+
+				
+            
+17. Stop conditions
+Il coding agent deve fermarsi, non improvvisare e richiedere una decisione umana quando si verifica almeno una delle condizioni seguenti.
+
+17.1 LDAP e AD
+La libreria selezionata non supporta una primitiva obbligatoria o il supporto non è dimostrabile.
+LDAPS non valida correttamente hostname, trust chain o scadenza.
+Kerberos non è riproducibile nell'ambiente target.
+gMSA non è validato per l'esecuzione reale del servizio.
+unicodePwd richiede un workaround non approvato.
+ModifyDN modifica o perde inaspettatamente l'identità osservata.
+Paged search perde o duplica risultati.
+Un controllo LDAP AD necessario non è disponibile.
+Lo schema AD osservato non corrisponde alle assunzioni.
+Un attributo binario non può essere convertito lossless.
+Il DC del read-after-write non può essere mantenuto o identificato.
+L'esito del commit è ambiguo.
+17.2 Identity e scope
+Il target risolve a più oggetti.
+Il target non ha un objectGUID valido.
+Il target è fuori Base DN/OU allowlisted.
+Il target cambia DN tra resolve ed execute e i safeguard non permettono una nuova decisione sicura.
+La source anchor cliente non è nota o confligge con la configurazione.
+La richiesta tenta di usare il DN come identità primaria senza verifica GUID.
+La richiesta coinvolge cross-domain o cross-forest non ancora supportato.
+17.3 Sicurezza
+L'operazione richiede Domain Admin, GenericAll ampio o privilegi superiori a quelli approvati.
+Il certificato è invalido, scaduto, non trusted o non corrisponde all'host.
+JWT, mTLS, tenant o connector binding non possono essere validati.
+La nonce store non è disponibile e l'anti-replay non può essere garantito.
+L'approval context è mancante, ambiguo, scaduto o non verificabile.
+La richiesta riguarda un gruppo/account privilegiato.
+Il payload contiene LDAP raw, PowerShell, comandi o attributi non allowlisted.
+Un secret compare in log, audit, response, test artifact o exception.
+L'audit before/requested/after non può essere scritto.
+L'idempotenza non può essere riservata atomicamente.
+17.4 Qualità e operatività
+Un test E2E obbligatorio non è riproducibile.
+La CI non è verde.
+mypy strict richiede una disabilitazione ampia non motivata.
+La coverage scende sotto l'80% del nuovo codice.
+Un file cresce oltre il limite indicativo senza piano di split.
+Una PR mescola feature, fix e refactor non correlati.
+Il recovery dell'operation store non è dimostrabile.
+Un retry può causare doppia mutazione.
+Il worker non può garantire deduplica con delivery at-least-once.
+La verifica Entra viene erroneamente introdotta nel core LDAP on-prem.
+Un timeout Entra richiede un valore hardcoded non approvato.
+17.5 Provenance e licenza
+La licenza di OpenRSAT o di una dipendenza è incompatibile o non verificabile.
+Il lavoro proposto richiede copia, fork o traduzione meccanica di codice OpenRSAT.
+La provenienza di codice, snippet o algoritmo non è documentabile.
+Una nuova dipendenza non supera la review di licenza e sicurezza.
+In ogni stop condition, il coding agent deve:
+
+interrompere le modifiche rischiose;
+preservare eventuali test o prove diagnostiche non sensibili;
+documentare il punto esatto di blocco;
+indicare alternative con vantaggi e rischi senza sceglierle autonomamente;
+aprire o aggiornare un ADR;
+richiedere il checkpoint umano;
+non passare allo step successivo.

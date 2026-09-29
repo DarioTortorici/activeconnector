@@ -1,0 +1,30 @@
+<!-- WinSW service wrapper descriptor for the MWA AD Connector (Step 18).
+
+  Install: place next to WinSW.exe renamed to MWAADConnector.exe,
+  then `MWAADConnector.exe install`. The process runs `mwa-api` and
+  `mwa-worker` as supervised children via the wrapper's start/stop hooks.
+  Service identity: gMSA recommended (no static password anywhere).
+-->
+<service>
+  <id>MWAADConnector</id>
+  <name>MWA AD Connector</name>
+  <description>On-premises Active Directory connector for MWA (outbound-only).</description>
+  <executable>%CONNECTOR_HOME%\venv\Scripts\python.exe</executable>
+  <arguments>-m mwa_ad_connector.entrypoints.api</arguments>
+  <workingdirectory>%CONNECTOR_HOME%</workingdirectory>
+  <env name="MWA_CONNECTOR_CONFIG" value="C:\ProgramData\MWA\connector.json" />
+  <logpath>%CONNECTOR_HOME%\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>14</keepFiles>
+  </log>
+  <!-- No secrets in command line, environment, or logs. -->
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+  <onfailure action="restart" delay="10 sec" />
+  <onfailure action="restart" delay="30 sec" />
+  <onfailure action="none" />
+  <resetfailure>1 hour</resetfailure>
+  <stopparentprocessfirst>true</stopparentprocessfirst>
+  <stoptimeout>30 sec</stoptimeout>
+</service>

@@ -1,0 +1,5 @@
+# Code owners: add team handles before requesting review.
+* @mwa-team-identity
+/src/mwa_ad_connector/domain/ @mwa-team-identity
+/src/mwa_ad_connector/config/ @mwa-team-identity
+/src/mwa_ad_connector/security/ @mwa-team-identity
