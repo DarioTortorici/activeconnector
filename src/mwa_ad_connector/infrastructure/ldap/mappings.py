@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import struct
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 
 from mwa_ad_connector.domain.objects import DirectoryGroup, DirectoryUser, OrganizationalUnit
@@ -169,7 +170,9 @@ def redacted_attributes_view(attributes: dict[str, list[str]], allowlist: frozen
 
 
 def _first(values: object) -> str | None:
-    if isinstance(values, (list, tuple)) and values:
+    if isinstance(values, (list, tuple)):
+        if not values:
+            return None
         first = values[0]
         if isinstance(first, bytes):
             return first.decode("utf-8", "replace")
@@ -187,17 +190,24 @@ def _require(value: str | None, attribute: str) -> str:
     return value
 
 
-def _entry_guid(attrs: dict[str, object]) -> uuid.UUID:
+def _entry_guid(attrs: Mapping[str, object]) -> uuid.UUID:
     raw_guid = attrs.get("objectGUID")
-    guid_bytes = raw_guid[0] if isinstance(raw_guid, list) and raw_guid else raw_guid
-    if isinstance(guid_bytes, str):
-        guid_bytes = guid_bytes.encode("latin1")
-    if not isinstance(guid_bytes, (bytes, bytearray)):
-        raise ValueError("unexpected schema: objectGUID missing in LDAP entry")
-    return guid_bytes_le_to_uuid(bytes(guid_bytes))
+    guid_value = raw_guid[0] if isinstance(raw_guid, (list, tuple)) and raw_guid else raw_guid
+    if isinstance(guid_value, str):
+        text = guid_value.strip()
+        if text.startswith("{") and text.endswith("}"):
+            text = text[1:-1]
+        try:
+            return uuid.UUID(text)
+        except ValueError:
+            pass
+        guid_value = guid_value.encode("latin1")
+    if isinstance(guid_value, (bytes, bytearray)):
+        return guid_bytes_le_to_uuid(bytes(guid_value))
+    raise ValueError("unexpected schema: objectGUID missing in LDAP entry")
 
 
-def _flatten(attrs: dict[str, object]) -> dict[str, list[str]]:
+def _flatten(attrs: Mapping[str, object]) -> dict[str, list[str]]:
     flat: dict[str, list[str]] = {}
     for key, val in attrs.items():
         items = val if isinstance(val, list) else [val]
@@ -228,12 +238,18 @@ def map_entry_to_user(
         ValueError: If schema-mandatory attributes are missing.
     """
     attrs = entry.get("attributes", {})
-    if not isinstance(attrs, dict):
+    if not isinstance(attrs, Mapping):
         raise TypeError("LDAP entry attributes must be a mapping")
     uac = int(_first(attrs.get("userAccountControl")) or 0)
     enabled, locked = uac_to_enabled_locked(uac)
-    pwd_raw = _first(attrs.get("pwdLastSet"))
-    pwd_last_set = filetime_to_datetime(int(pwd_raw)) if pwd_raw and pwd_raw.lstrip("-").isdigit() else None
+    pwd_value = attrs.get("pwdLastSet")
+    if isinstance(pwd_value, (list, tuple)) and pwd_value:
+        pwd_value = pwd_value[0]
+    if isinstance(pwd_value, datetime):
+        pwd_last_set: datetime | None = pwd_value if pwd_value.tzinfo else pwd_value.replace(tzinfo=UTC)
+    else:
+        pwd_raw = _first(pwd_value)
+        pwd_last_set = filetime_to_datetime(int(pwd_raw)) if pwd_raw and pwd_raw.lstrip("-").isdigit() else None
     return DirectoryUser(
         object_guid=_entry_guid(attrs),
         distinguished_name=_require(str(entry.get("dn", "")) or None, "distinguishedName"),
@@ -275,7 +291,7 @@ def map_entry_to_group(
         ValueError: If schema-mandatory attributes are missing.
     """
     attrs = entry.get("attributes", {})
-    if not isinstance(attrs, dict):
+    if not isinstance(attrs, Mapping):
         raise TypeError("LDAP entry attributes must be a mapping")
     scope, category = group_type_to_scope_category(int(_first(attrs.get("groupType")) or 0))
     return DirectoryGroup(
@@ -318,7 +334,7 @@ def map_entry_to_ou(
         ValueError: If schema-mandatory attributes are missing.
     """
     attrs = entry.get("attributes", {})
-    if not isinstance(attrs, dict):
+    if not isinstance(attrs, Mapping):
         raise TypeError("LDAP entry attributes must be a mapping")
     dn = _require(str(entry.get("dn", "")) or None, "distinguishedName")
     parent = dn.split(",", 1)[1] if "," in dn else dn

@@ -64,6 +64,24 @@ obbligatorio o è incoerente, il processo non parte.
 Template completo: `packaging/config-templates/connector.example.json` (valori
 finti di laboratorio, mai segreti reali nel repository).
 
+Generazione automatica dei valori: esegui su un host domain-joined
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\discover_ad_env.ps1 `
+    -ExportCaTo C:\ProgramData\MWA\tls\domain-ca.pem -OutputPath .\mwa-ad-env.ps1 -Pause
+```
+
+Se la finestra si chiude subito usa `-Pause` (attende Invio) oppure avvia con
+`powershell -NoExit -ExecutionPolicy Bypass -File ...`; con `-OutputPath` il
+blocco viene salvato su file e rileggibile con `Get-Content .\mwa-ad-env.ps1`.
+
+Lo script e' **read-only** (non modifica AD): rileva dominio, Base DN, DC
+preferito, porta 636, certificato LDAPS (subject/SAN/scadenza), catena di trust
+ed esporta la CA in PEM; elenca le OU sotto il Base DN e suggerisce la OU gestita
+(`-ManagedOuHint`, default `Managed`); genera nuovi `JWT_SECRET` e
+`PAGE_TOKEN_SECRET`; stampa (e opzionalmente salva con `-OutputPath`) il blocco
+`$env:MWA_AD_*` pronto da incollare sull'host connettore.
+
 Esempio PowerShell:
 
 ```powershell

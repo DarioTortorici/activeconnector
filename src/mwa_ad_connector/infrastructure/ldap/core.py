@@ -2,13 +2,48 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 from uuid import UUID
 
 from mwa_ad_connector.infrastructure.ldap.common import _check, _entry_to_dict
 from mwa_ad_connector.infrastructure.ldap.connection import LdapConnectionManager
-from mwa_ad_connector.infrastructure.ldap.error_mapping import map_ldap_result
 from mwa_ad_connector.infrastructure.ldap.filters import build_guid_filter, escape_filter_value, validate_dn_syntax
+
+_PAGED_RESULT_OID = "1.2.840.113556.1.4.319"
+
+
+def _normalize_paged_entry(item: dict[str, Any]) -> dict[str, object]:
+    """Normalize one paged-search response dict to the entry shape.
+
+    ldap3 ``paged_search`` with ``generator=True`` yields raw response dicts
+    (``dn``/``attributes``/``type``), not ``Entry`` objects. Attribute maps are
+    ``CaseInsensitiveDict`` instances (not ``dict`` subclasses), so mappings
+    must be checked against ``collections.abc.Mapping``.
+
+    Args:
+        item: Raw response item from a paged search.
+
+    Returns:
+        Mapping with ``dn`` and ``attributes`` keys.
+    """
+    attrs = item.get("attributes")
+    if not isinstance(attrs, Mapping):
+        raw = item.get("raw_attributes")
+        attrs = raw if isinstance(raw, Mapping) else {}
+    return {"dn": str(item.get("dn", "")), "attributes": {str(k): v for k, v in attrs.items()}}
+
+
+def _paged_cookie(conn: Any) -> bytes | None:
+    """Extract the paging cookie from the last LDAP result, if any."""
+    controls = dict(conn.result).get("controls", {})
+    try:
+        value = controls[_PAGED_RESULT_OID]["value"]["cookie"]
+    except (KeyError, TypeError):
+        return None
+    if isinstance(value, (bytes, bytearray)) and value:
+        return bytes(value)
+    return None
 
 
 class LdapAdapterCore:
@@ -109,39 +144,54 @@ class LdapAdapterCore:
     async def _paged(
         self, search_filter: str, attributes: list[str], page_size: int, page_token: str | None
     ) -> tuple[list[dict[str, object]], str | None]:
+        """Run a cookie-paged search and return a slice plus the next offset.
+
+        The token is an opaque string carrying the entry offset of the slice
+        start; the returned token is the offset of the next slice.
+
+        Args:
+            search_filter: Prebuilt LDAP filter (never raw caller input).
+            attributes: Requested attributes.
+            page_size: Maximum entries per slice.
+            page_token: Offset token from a previous call, or None.
+
+        Returns:
+            Tuple of (entry dicts for this slice, next offset token or None).
+        """
         from ldap3 import SUBTREE  # noqa: PLC0415
 
-        wanted = int(page_token) if page_token else 0
+        start = int(page_token) if page_token else 0
 
         def _op(conn: Any) -> tuple[list[dict[str, object]], str | None]:
-            gen = conn.extend.standard.paged_search(
-                self._base_dn, search_filter, SUBTREE, attributes=attributes, paged_size=page_size, generator=True
-            )
-            index = 0
-            for entry in gen:
-                if not getattr(entry, "entry_dn", None):
-                    result_code = int(dict(conn.result).get("result", 0))
-                    if result_code != 0:
-                        mapped = map_ldap_result(result_code, str(dict(conn.result)), "search")
-                        raise RuntimeError(f"{mapped.code}: {mapped.remediation}")
-                    continue
-                if index == wanted:
-                    page = [_entry_to_dict(entry)]
-                    for more in gen:
-                        if not getattr(more, "entry_dn", None):
-                            break
-                        page.append(_entry_to_dict(more))
-                        if len(page) >= page_size:
-                            break
-                    cookie = (
-                        conn.result.get("controls", {})
-                        .get("1.2.840.113556.1.4.319", {})
-                        .get("value", {})
-                        .get("cookie", b"")
-                    )
-                    return page, (str(wanted + 1) if cookie else None)
-                index += 1
-            return [], None
+            collected: list[dict[str, object]] = []
+            seen = 0
+            more = False
+            cookie: bytes | None = None
+            while True:
+                conn.search(
+                    self._base_dn,
+                    search_filter,
+                    search_scope=SUBTREE,
+                    attributes=attributes,
+                    paged_size=page_size,
+                    paged_cookie=cookie,
+                )
+                _check(conn, "search")
+                page_entries = [item for item in conn.response if item.get("type") == "searchResEntry"]
+                for item in page_entries:
+                    if len(collected) >= page_size:
+                        more = True
+                        break
+                    if seen >= start:
+                        collected.append(_normalize_paged_entry(item))
+                    seen += 1
+                if more or not page_entries:
+                    break
+                cookie = _paged_cookie(conn)
+                if not cookie:
+                    break
+            next_token = str(start + len(collected)) if more else None
+            return collected, next_token
 
         entries, _ = await self._manager.execute(_op)
         return entries

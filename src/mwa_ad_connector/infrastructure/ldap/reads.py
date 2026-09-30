@@ -121,8 +121,10 @@ class LdapAdapterReads(LdapAdapterCore):
                 users.append(
                     map_entry_to_user(raw, domain_id=self._domain_id, source_dc=self.source_dc, observed_at=_now())
                 )
-            except ValueError:
-                logger.warning("skipping unmappable user entry")
+            except ValueError as exc:
+                attrs = raw.get("attributes")
+                keys = sorted(str(key) for key in attrs) if isinstance(attrs, dict) else []
+                logger.warning("skipping unmappable user entry: %s | attributes=%s", exc, keys)
         return users, next_token
 
     async def search_groups(
@@ -142,8 +144,10 @@ class LdapAdapterReads(LdapAdapterCore):
                 groups.append(
                     map_entry_to_group(raw, domain_id=self._domain_id, source_dc=self.source_dc, observed_at=_now())
                 )
-            except ValueError:
-                logger.warning("skipping unmappable group entry")
+            except ValueError as exc:
+                attrs = raw.get("attributes")
+                keys = sorted(str(key) for key in attrs) if isinstance(attrs, dict) else []
+                logger.warning("skipping unmappable group entry: %s | attributes=%s", exc, keys)
         return groups, next_token
 
     async def lookup_by_dn(self, dn: str) -> dict[str, object] | None:

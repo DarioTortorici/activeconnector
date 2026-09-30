@@ -38,12 +38,17 @@ async def _collect_checks(
 ) -> list[ComponentStatus]:
     """Gather readiness checks, degrading gracefully when a port is unwired."""
     checks: list[ComponentStatus] = [ComponentStatus(name="configuration_valid", healthy=True)]
+    seen_names = {"configuration_valid"}
     try:
         readiness = await operation_service.get_readiness()
         for entry in readiness.get("checks", []):
+            name = str(entry.get("name", "unknown"))
+            if name in seen_names:
+                continue
+            seen_names.add(name)
             checks.append(
                 ComponentStatus(
-                    name=str(entry.get("name", "unknown")),
+                    name=name,
                     healthy=bool(entry.get("healthy", False)),
                     detail=str(entry.get("detail", ""))[:256],
                 )

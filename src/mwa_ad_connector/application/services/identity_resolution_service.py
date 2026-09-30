@@ -110,7 +110,7 @@ class IdentityResolutionService:
         else:
             exact = [u for u in users if u.sam_account_name.lower() == lowered]
         if not exact:
-            raise TargetNotFoundError(f"target not found: {kind}")
+            raise TargetNotFoundError(f"target not found: {kind}:{value}")
         if len(exact) > 1:
             raise AmbiguousTargetError(f"ambiguous target: {len(exact)} matches for {kind}")
         user = exact[0]
@@ -127,7 +127,7 @@ class IdentityResolutionService:
         lowered = value.lower()
         exact = [g for g in groups if g.sam_account_name.lower() == lowered or g.name.lower() == lowered]
         if not exact:
-            raise TargetNotFoundError("target not found: GROUP_NAME")
+            raise TargetNotFoundError(f"target not found: GROUP_NAME:{value}")
         if len(exact) > 1:
             raise AmbiguousTargetError(f"ambiguous target: {len(exact)} matches for GROUP_NAME")
         group = exact[0]
