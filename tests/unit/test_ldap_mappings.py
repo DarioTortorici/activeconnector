@@ -29,7 +29,7 @@ def _real_entry(**overrides: object) -> dict[str, object]:
         "displayName": [],
         "mail": [],
         "userAccountControl": 512,
-        "lockoutTime": [],
+        "lockoutTime": datetime(1601, 1, 1, tzinfo=UTC),  # ldap3 formats 0 as the AD epoch
         "pwdLastSet": PWD_LAST_SET,
         "whenChanged": datetime(2026, 9, 30, 7, 55, 29, tzinfo=UTC),
         "uSNChanged": 49231,
@@ -65,6 +65,14 @@ def test_empty_list_attribute_values_map_to_none() -> None:
     user = _map(_real_entry())
     assert user.display_name is None
     assert user.member_of_guids == []
+
+
+def test_lockout_time_derives_locked_state() -> None:
+    assert _map(_real_entry()).locked is False
+    assert _map(_real_entry(lockoutTime=datetime(2026, 9, 30, 9, 0, tzinfo=UTC))).locked is True
+    assert _map(_real_entry(lockoutTime=133500000000000000)).locked is True
+    assert _map(_real_entry(lockoutTime="0")).locked is False
+    assert _map(_real_entry(lockoutTime=[datetime(2026, 9, 30, 9, 0, tzinfo=UTC)])).locked is True
 
 
 def test_filetime_string_still_converted() -> None:

@@ -16,13 +16,11 @@ pytestmark = pytest.mark.contract
 
 ALL_SCOPES = [
     "ad.account.unlock",
-    "ad.account.enable",
-    "ad.account.disable",
+    "ad.account.state.write",
     "ad.account.password.force_change",
     "ad.user.create",
     "ad.user.attributes.write",
-    "ad.user.rename",
-    "ad.user.move",
+    "ad.user.lifecycle.write",
     "ad.user.delete",
     "ad.group.create",
     "ad.group.attributes.write",

@@ -138,6 +138,9 @@ def filetime_to_datetime(value: int) -> datetime | None:
 def uac_to_enabled_locked(user_account_control: int) -> tuple[bool, bool]:
     """Derive enabled/locked flags from userAccountControl.
 
+    The legacy UAC LOCKOUT bit is not set by policy lockouts; real lockout
+    state comes from ``lockoutTime`` (see :func:`lockout_time_to_locked`).
+
     Args:
         user_account_control: Raw bitmask.
 
@@ -147,6 +150,32 @@ def uac_to_enabled_locked(user_account_control: int) -> tuple[bool, bool]:
     enabled = not bool(user_account_control & ACCOUNTDISABLE)
     locked = bool(user_account_control & LOCKOUT)
     return enabled, locked
+
+
+def lockout_time_to_locked(value: object) -> bool:
+    """Derive the locked flag from the AD ``lockoutTime`` attribute.
+
+    ldap3 formats Integer8 attributes: ``lockoutTime = 0`` (not locked)
+    arrives as ``datetime(1601, 1, 1, tzinfo=UTC)``, a real lockout as the
+    lockout timestamp. Raw ints/strings (FILETIME) are also accepted.
+
+    Args:
+        value: Raw ``lockoutTime`` value in any observed form.
+
+    Returns:
+        True when the account is locked out.
+    """
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else None
+    if isinstance(value, datetime):
+        moment = value if value.tzinfo else value.replace(tzinfo=UTC)
+        return moment > _AD_EPOCH
+    if isinstance(value, (int, float)):
+        return value > 0
+    text = _first(value)
+    if text is None:
+        return False
+    return text.lstrip("-").isdigit() and int(text) > 0
 
 
 def group_type_to_scope_category(group_type: int) -> tuple[str, str]:
@@ -259,7 +288,8 @@ def map_entry_to_user(
     if not isinstance(attrs, Mapping):
         raise TypeError("LDAP entry attributes must be a mapping")
     uac = int(_first(attrs.get("userAccountControl")) or 0)
-    enabled, locked = uac_to_enabled_locked(uac)
+    enabled, uac_locked = uac_to_enabled_locked(uac)
+    locked = uac_locked or lockout_time_to_locked(attrs.get("lockoutTime"))
     pwd_value = attrs.get("pwdLastSet")
     if isinstance(pwd_value, (list, tuple)) and pwd_value:
         pwd_value = pwd_value[0]

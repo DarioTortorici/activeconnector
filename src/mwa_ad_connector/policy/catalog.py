@@ -171,7 +171,7 @@ CAPABILITY_CATALOG: dict[str, CapabilityEntry] = {
         "account.enable",
         RiskLevel.HIGH,
         R,
-        ["ad.account.enable"],
+        ["ad.account.state.write"],
         "write properties required for userAccountControl",
         True,
     ),
@@ -179,7 +179,7 @@ CAPABILITY_CATALOG: dict[str, CapabilityEntry] = {
         "account.disable",
         RiskLevel.HIGH,
         R,
-        ["ad.account.disable"],
+        ["ad.account.state.write"],
         "write userAccountControl",
         True,
         "reason required",
@@ -202,9 +202,11 @@ CAPABILITY_CATALOG: dict[str, CapabilityEntry] = {
         "staged diff enforced",
     ),
     "user.rename": _entry(
-        "user.rename", RiskLevel.HIGH, N, ["ad.user.rename"], "validated write/ModifyDN within scope", True
+        "user.rename", RiskLevel.HIGH, N, ["ad.user.lifecycle.write"], "validated write/ModifyDN within scope", True
     ),
-    "user.move": _entry("user.move", RiskLevel.HIGH, N, ["ad.user.move"], "move/ModifyDN between permitted OUs", True),
+    "user.move": _entry(
+        "user.move", RiskLevel.HIGH, N, ["ad.user.lifecycle.write"], "move/ModifyDN between permitted OUs", True
+    ),
     "user.delete": _entry(
         "user.delete",
         RiskLevel.CRITICAL,

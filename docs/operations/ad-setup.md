@@ -3,6 +3,8 @@
 Guida per collegare il connettore a un dominio Active Directory reale (lab o
 produzione) e verificarne il funzionamento. Il dominio di laboratorio è
 descritto in [`docs/laboratory/lab-setup.md`](../laboratory/lab-setup.md).
+Per il laboratorio `corp.test.local` già configurato e i comandi di test
+pronti all'uso: [`lab-corp-test-local.md`](lab-corp-test-local.md).
 
 > Il connettore è **outbound-only**: apre solo connessioni LDAPS verso il DC
 > configurato, non espone endpoint LDAP/PowerShell/shell e non accetta filtri
