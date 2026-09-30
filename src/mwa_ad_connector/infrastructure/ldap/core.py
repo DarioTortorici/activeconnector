@@ -112,21 +112,21 @@ class LdapAdapterCore:
         return str(entry.get("dn", ""))
 
     async def _guid_for_dn(self, dn: str, attributes: list[str]) -> UUID | None:
-        from mwa_ad_connector.infrastructure.ldap.mappings import guid_bytes_le_to_uuid  # noqa: PLC0415
+        from mwa_ad_connector.infrastructure.ldap.mappings import parse_object_guid  # noqa: PLC0415
 
         entry = await self._lookup_raw(dn, attributes)
         if entry is None:
             return None
         attrs = entry.get("attributes")
-        if not isinstance(attrs, dict):
+        if not isinstance(attrs, Mapping):
             return None
         raw = attrs.get("objectGUID")
-        blob = raw[0] if isinstance(raw, list) and raw else raw
-        if isinstance(blob, str):
-            blob = blob.encode("latin1")
-        if not isinstance(blob, (bytes, bytearray)):
+        if raw is None:
             return None
-        return guid_bytes_le_to_uuid(bytes(blob))
+        try:
+            return parse_object_guid(raw)
+        except ValueError:
+            return None
 
     async def _modify_raw(self, dn: str, changes: dict[str, list[tuple[str, list[Any]]]], operation: str) -> None:
         def _op(conn: Any) -> None:

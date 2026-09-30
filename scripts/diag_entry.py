@@ -74,8 +74,10 @@ async def _run(user: str) -> int:
             )
             return list(conn.response)
 
-        entries, source_dc = await manager.execute(_op)
-        print(f"dc={source_dc} entries={len(entries)}")
+        raw_items, source_dc = await manager.execute(_op)
+        entries = [item for item in raw_items if item.get("type") == "searchResEntry"]
+        skipped = [str(item.get("type")) for item in raw_items if item.get("type") != "searchResEntry"]
+        print(f"dc={source_dc} entries={len(entries)} skipped_non_entries={skipped}")
         for item in entries[:3]:
             normalized = _normalize_paged_entry(item)
             print(f"dn: {normalized['dn']}")

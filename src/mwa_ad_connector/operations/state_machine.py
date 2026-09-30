@@ -54,6 +54,7 @@ TRANSITIONS: dict[OperationState, tuple[OperationState, ...]] = {
     OperationState.EXECUTING: (
         OperationState.AD_COMMITTED,
         OperationState.FAILED,
+        OperationState.FAILED_VERIFICATION,
         OperationState.EXPIRED,
     ),
     OperationState.AD_COMMITTED: (

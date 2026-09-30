@@ -11,8 +11,10 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+import pytest
+
 from mwa_ad_connector.domain.objects import DirectoryUser
-from mwa_ad_connector.infrastructure.ldap.mappings import _first, map_entry_to_user
+from mwa_ad_connector.infrastructure.ldap.mappings import _first, map_entry_to_user, parse_object_guid
 
 GUID = uuid.UUID("ad3e3006-dc80-46ff-b258-e438ce494c11")
 PWD_LAST_SET = datetime(2026, 9, 30, 7, 55, 29, 112871, tzinfo=UTC)
@@ -81,3 +83,18 @@ def test_first_empty_sequences_are_none() -> None:
     assert _first([]) is None
     assert _first(()) is None
     assert _first(["jdoe"]) == "jdoe"
+
+
+def test_parse_object_guid_all_observed_forms() -> None:
+    assert parse_object_guid(f"{{{GUID}}}") == GUID
+    assert parse_object_guid(str(GUID)) == GUID
+    assert parse_object_guid(GUID.bytes_le) == GUID
+    assert parse_object_guid([GUID.bytes_le]) == GUID
+    assert parse_object_guid(GUID.bytes_le.decode("latin1")) == GUID
+
+
+def test_parse_object_guid_rejects_unknown_values() -> None:
+    with pytest.raises(ValueError):
+        parse_object_guid(None)
+    with pytest.raises(ValueError):
+        parse_object_guid("{not-a-guid}")

@@ -23,6 +23,7 @@ from mwa_ad_connector.domain.errors import (
     ConcurrentModificationError,
     IdempotencyCollisionError,
     PolicyDeniedError,
+    VerificationFailedError,
 )
 from mwa_ad_connector.domain.evidence import EntraEvidenceHint, VerificationEvidence
 from mwa_ad_connector.domain.operations import (
@@ -163,6 +164,18 @@ class OperationService:
         await self._move(record.operation_id, OperationState.EXECUTING, "executing")
         try:
             parts = await mutate()
+        except VerificationFailedError as exc:
+            await self._audit_event(record, caller, "FAILED_VERIFICATION", {"error": type(exc).__name__})
+            await self._move(record.operation_id, OperationState.FAILED_VERIFICATION, "post-commit verification failed")
+            return MutationResult(
+                operation_id=record.operation_id,
+                state=OperationState.FAILED_VERIFICATION,
+                disposition=MutationDisposition.APPLIED,
+                target_object_guid=request.target.object_guid or UUID(int=0),
+                source_dc=self._source_dc,
+                committed_at=_utcnow(),
+                entra_evidence_hint=self._entra_hint(None, None),
+            )
         except Exception as exc:
             await self._audit_event(record, caller, "FAILED", {"error": type(exc).__name__})
             await self._move(record.operation_id, OperationState.FAILED, "mutation failed")

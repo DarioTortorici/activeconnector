@@ -65,6 +65,37 @@ def guid_bytes_le_to_uuid(raw: bytes) -> uuid.UUID:
     return uuid.UUID(bytes_le=raw)
 
 
+def parse_object_guid(raw: object) -> uuid.UUID:
+    """Parse an objectGUID value in any observed ldap3 form.
+
+    ldap3 may return objectGUID as raw 16-byte little-endian bytes or as a
+    schema-formatted braced GUID string ("{xxxxxxxx-xxxx-...}"), possibly
+    wrapped in a single-item list.
+
+    Args:
+        raw: Raw attribute value from ldap3.
+
+    Returns:
+        Parsed UUID.
+
+    Raises:
+        ValueError: On missing or unrecognized values.
+    """
+    value = raw[0] if isinstance(raw, (list, tuple)) and raw else raw
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("{") and text.endswith("}"):
+            text = text[1:-1]
+        try:
+            return uuid.UUID(text)
+        except ValueError:
+            pass
+        value = value.encode("latin1")
+    if isinstance(value, (bytes, bytearray)):
+        return guid_bytes_le_to_uuid(bytes(value))
+    raise ValueError("unexpected schema: objectGUID missing in LDAP entry")
+
+
 def sid_bytes_to_str(raw: bytes) -> str:
     """Convert a binary SID to string form (S-1-...).
 
@@ -191,20 +222,7 @@ def _require(value: str | None, attribute: str) -> str:
 
 
 def _entry_guid(attrs: Mapping[str, object]) -> uuid.UUID:
-    raw_guid = attrs.get("objectGUID")
-    guid_value = raw_guid[0] if isinstance(raw_guid, (list, tuple)) and raw_guid else raw_guid
-    if isinstance(guid_value, str):
-        text = guid_value.strip()
-        if text.startswith("{") and text.endswith("}"):
-            text = text[1:-1]
-        try:
-            return uuid.UUID(text)
-        except ValueError:
-            pass
-        guid_value = guid_value.encode("latin1")
-    if isinstance(guid_value, (bytes, bytearray)):
-        return guid_bytes_le_to_uuid(bytes(guid_value))
-    raise ValueError("unexpected schema: objectGUID missing in LDAP entry")
+    return parse_object_guid(attrs.get("objectGUID"))
 
 
 def _flatten(attrs: Mapping[str, object]) -> dict[str, list[str]]:

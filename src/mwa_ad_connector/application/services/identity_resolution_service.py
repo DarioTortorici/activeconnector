@@ -7,6 +7,7 @@ multiple exact matches raise ``AmbiguousTargetError``.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from uuid import UUID
 
 from mwa_ad_connector.application.ports.directory_gateway import DirectoryGateway
@@ -77,16 +78,16 @@ class IdentityResolutionService:
         if entry is None:
             raise TargetNotFoundError("target not found: dn lookup empty")
         attrs = entry.get("attributes", {})
-        from mwa_ad_connector.infrastructure.ldap.mappings import guid_bytes_le_to_uuid  # noqa: PLC0415
+        from mwa_ad_connector.infrastructure.ldap.mappings import parse_object_guid  # noqa: PLC0415
 
         guid: UUID | None = None
-        if isinstance(attrs, dict):
+        if isinstance(attrs, Mapping):
             raw = attrs.get("objectGUID")
-            blob = raw[0] if isinstance(raw, list) and raw else raw
-            if isinstance(blob, str):
-                blob = blob.encode("latin1")
-            if isinstance(blob, (bytes, bytearray)):
-                guid = guid_bytes_le_to_uuid(bytes(blob))
+            if raw is not None:
+                try:
+                    guid = parse_object_guid(raw)
+                except ValueError:
+                    guid = None
         if guid is None:
             raise TargetNotFoundError("target not found: dn has no readable GUID")
         resolved = await self._gateway.resolve_by_guid(guid)
