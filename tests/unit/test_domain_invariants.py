@@ -104,6 +104,7 @@ def test_capability_request_mutation_requires_bindings() -> None:
 def test_operation_record_rejects_illegal_transition() -> None:
     """Discontinuous history chains are rejected."""
     now = datetime.now(timezone.utc)
+    guid = uuid4()
     with pytest.raises(ValidationError):
         OperationRecord(
             operation_id="op-1",
@@ -115,7 +116,7 @@ def test_operation_record_rejects_illegal_transition() -> None:
             capability="group.member.add",
             risk="HIGH",
             request_hash="hash",
-            idempotency_key="key-12345678",
+            idempotency_key=str(guid),
             correlation_id="corr",
             caller_subject="tester",
             state="AD_VERIFIED",

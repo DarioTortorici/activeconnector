@@ -1,6 +1,7 @@
 """Unit: command-envelope validation (local worker model + canonical cross-check)."""
 
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -26,7 +27,7 @@ def _valid_envelope(**overrides: object) -> dict[str, object]:
             "forest_id": "forest-lab",
         },
         "parameters": {"member": {"object_type": "USER", "object_guid": "91faf0e8-cfb6-49ea-80a7-e621986443f8"}},
-        "idempotency_key": "key-12345678",
+        "idempotency_key": str(uuid4()),
         "correlation_id": "corr-12345678",
         "ticket_id": "TICKET-1",
         "requested_at": now.isoformat(),
