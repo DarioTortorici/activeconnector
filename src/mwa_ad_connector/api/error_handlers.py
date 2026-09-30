@@ -7,6 +7,7 @@ returned to callers.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -248,6 +249,12 @@ async def http_error_handler(request: Request, exc: StarletteHTTPException) -> J
 
 async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
     """Last-resort 500 mapping: no internal text leaks to the caller."""
+    path = getattr(getattr(request, "url", None), "path", "")
+    logging.getLogger("mwa_ad_connector.api").error(
+        "unhandled connector error",
+        exc_info=exc,
+        extra={"correlation_id": _correlation_id(request), "path": path},
+    )
     fields = {
         "code": "INTERNAL_ERROR",
         "category": "INTERNAL",

@@ -228,7 +228,7 @@ class OperationService:
             state=existing.state,
             disposition=disposition,
             target_object_guid=existing.target_guid or UUID(int=0),
-            source_dc=existing.selected_dc or "",
+            source_dc=existing.selected_dc or self._source_dc or "unknown",
             verification_evidence=existing.verification_evidence,
             entra_evidence_hint=self._entra_hint(None, None),
         )

@@ -63,7 +63,7 @@ class RecordingAudit:
         return None
 
 
-def _request(target_guid: UUID) -> CapabilityRequest:
+def _request(target_guid: UUID, *, dry_run: bool = False, member_guid: UUID | None = None) -> CapabilityRequest:
     now = datetime.now(UTC)
     return CapabilityRequest(
         capability="group.member.add",
@@ -78,7 +78,8 @@ def _request(target_guid: UUID) -> CapabilityRequest:
             domain_id="domain-lab",
             forest_id="forest-lab",
         ),
-        parameters={"member_guid": str(uuid4())},
+        parameters={"member_guid": str(member_guid or uuid4())},
+        dry_run=dry_run,
         idempotency_key="lab-key-0001",
         correlation_id="corr-1",
         ticket_id="LAB-1",
@@ -145,3 +146,28 @@ async def test_precommit_failure_stays_failed() -> None:
     assert stored is not None
     assert stored.state == OperationState.FAILED
     assert any(event["outcome"] == "FAILED" for event in audit.events)
+
+
+async def test_replay_after_restart_without_persisted_dc_is_valid() -> None:
+    """Replays rebuild the DC label when the persisted row lacks selected_dc."""
+    store = InMemoryOperationStore()
+    audit = RecordingAudit()
+    target_guid = uuid4()
+    member_guid = uuid4()
+
+    async def no_mutate() -> MutationParts:
+        raise AssertionError("dry-run must not mutate")
+
+    first_service = OperationService(OperationRepositoryAdapter(store), audit, source_dc="dc-lab")
+    first = await first_service.execute(
+        _request(target_guid, dry_run=True, member_guid=member_guid), _caller(), no_mutate
+    )
+    assert first.state == OperationState.AUTHORIZED
+
+    restarted_service = OperationService(OperationRepositoryAdapter(store), audit, source_dc="dc-lab")
+    replay = await restarted_service.execute(
+        _request(target_guid, dry_run=True, member_guid=member_guid), _caller(), no_mutate
+    )
+    assert replay.operation_id == first.operation_id
+    assert replay.source_dc == "dc-lab"
+    assert replay.disposition == MutationDisposition.NO_OP

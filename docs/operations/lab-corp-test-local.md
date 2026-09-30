@@ -271,15 +271,15 @@ Invoke-RestMethod -Uri "$base/operations/<operation_id>" -Headers $headers
 |---|---|---|
 | `group.member.add` / `group.member.remove` | *Modifica dell'appartenenza a un gruppo* | **fatta e verificata E2E** (ciclo APPLIED add/remove + NO_OP idempotente) |
 | `account.unlock` | custom task → *User objects* → Property-specific → Read/Write **lockoutTime** | **fatta e verificata E2E** (APPLIED su jdoe bloccato) |
-| `account.password.reset` | *Reimpostare le password utente e richiedere il cambio password all'accesso successivo* | da fare (richiede `ENABLE_PASSWORD_RESET=true` + approval) |
-| `account.password.force_change` | custom task → *User objects* → Read/Write **pwdLastSet** | da fare |
-| `account.enable` / `account.disable` | custom task → *User objects* → Read/Write **userAccountControl** | da fare |
-| `user.attributes.update` | custom task → *User objects* → Read/Write degli attributi allowlisted (`displayName`, `givenName`, `sn`, `description`, `title`, `department`, `company`, `telephoneNumber`, `mobile`, `mail`, `streetAddress`, `l`, `st`, `postalCode`, `c`, `co`, `countryCode`, `employeeID`, `employeeType`, `manager`, `info`) | da fare |
-| `user.create` / `user.delete` | *Creazione, eliminazione e gestione di account utente* | da fare |
-| `user.rename` / `user.move` | diritti create/delete child + write `name` (se `403 LDAP_INSUFFICIENT_ACCESS`, custom task con Create/Delete child su OU destinazione) | da fare |
-| `group.create` / `group.delete` / `group.attributes.update` | *Creazione, eliminazione e gestione di gruppi* (+ custom Read/Write per `displayName`, `description`, `mail`, `info`, `managedBy`) | da fare |
-| `group.rename` / `group.move` | come user rename/move | da fare |
-| `ou.create` / `ou.rename` / `ou.move` / `ou.delete` | custom task → *Organizational Unit objects* → Create/Delete + versione scrittura su `name` | da fare |
+| `account.password.reset` | *Reimpostare le password utente e richiedere il cambio password all'accesso successivo* | **da riprendere**: primo tentativo in dry-run (`AUTHORIZED`/`NO_OP` ⇒ l'API vedeva `VALIDATION_MODE_ONLY=true`); verificare flag/riavvio e ritentare con key nuova |
+| `account.password.force_change` | custom task → *User objects* → Read/Write **pwdLastSet** | **fatta e verificata E2E** (APPLIED, pwdLastSet→0) |
+| `account.enable` / `account.disable` | custom task → *User objects* → Read/Write **userAccountControl** | **fatta e verificata E2E** (APPLIED; approval mode REQUIRED con oggetto `approval`) |
+| `user.attributes.update` | custom task → *User objects* → Read/Write degli attributi allowlisted (`displayName`, `givenName`, `sn`, `description`, `title`, `department`, `company`, `telephoneNumber`, `mobile`, `mail`, `streetAddress`, `l`, `st`, `postalCode`, `c`, `co`, `countryCode`, `employeeID`, `employeeType`, `manager`, `info`) | **fatta e verificata E2E** (APPLIED su `displayName`) |
+| `user.create` / `user.delete` | *Creazione, eliminazione e gestione di account utente* | **fatta e verificata E2E** (create/rename/move/delete, delete con approval) |
+| `user.rename` / `user.move` | diritti create/delete child + write `name` (se `403 LDAP_INSUFFICIENT_ACCESS`, custom task con Create/Delete child su OU destinazione) | **fatta e verificata E2E** (rename + move verso `OU=Lifecycle`) |
+| `group.create` / `group.delete` / `group.attributes.update` | *Creazione, eliminazione e gestione di gruppi* (+ custom Read/Write per `displayName`, `description`, `mail`, `info`, `managedBy`) | **fatta e verificata E2E** (create/attrs/rename/move/delete; delete con approval) |
+| `group.rename` / `group.move` | come user rename/move | **fatta e verificata E2E** |
+| `ou.create` / `ou.rename` / `ou.move` / `ou.delete` | custom task → *Organizational Unit objects* → Create/Delete (+ ACE classe `organizationalUnit` via script se il wizard non basta) | **fatta e verificata E2E** (create/rename/move/delete APPLIED; move/delete con approval) |
 | Read (`user.resolve`, `user.get`, `search`, `members.list`, RootDSE) | letture consentite agli utenti autenticati | **fatte e verificate** |
 | `operation.get` / `audit.get` / `audit.export` | nessuna ACL AD | da verificare |
 
@@ -294,12 +294,13 @@ target fuori OU gestita → `403 TARGET_OUT_OF_SCOPE`; gruppo/account protetto �
 - [ ] replay idempotente: stessa `Idempotency-Key` → stesso `operation_id`, nessuna doppia scrittura
 - [ ] dry-run: `VALIDATION_MODE_ONLY=true` → 202 senza modifiche AD
 - [x] `account.unlock` su un utente bloccato (fatto: APPLIED; blocco via policy + tentativi errati, non scrivibile direttamente)
-- [ ] `account.password.reset` (LDAPS + `ENABLE_PASSWORD_RESET=true` + approval) e `force_change`
-- [ ] `account.enable` / `account.disable`
-- [ ] `user.attributes.update` su attributi allowlisted
-- [ ] `user.create` / `user.rename` / `user.move` / `user.delete` (con nome policy/`Lifecycle` OU)
-- [ ] `group.create` / `group.attributes.update` / `group.rename` / `group.move` / `group.delete`
-- [ ] `ou.create` / `ou.rename` / `ou.move` / `ou.delete` (con `require_empty`)
+- [x] `account.password.force_change` (fatto: APPLIED, pwdLastSet→0)
+- [ ] `account.password.reset` (LDAPS + `ENABLE_PASSWORD_RESET=true` + approval) — **da riprendere** (primo tentativo dry-run; controllare `VALIDATION_MODE_ONLY` e riavvio API, poi key nuova)
+- [x] `account.enable` / `account.disable` (fatto: APPLIED + approval context; verificare anche il negativo 409 senza approval)
+- [x] `user.attributes.update` su attributi allowlisted (fatto: APPLIED su `displayName`; ridiff con stessa key → replay)
+- [x] `user.create` / `user.rename` / `user.move` / `user.delete` (fatto: ciclo completo APPLIED, delete con approval)
+- [x] `group.create` / `group.attributes.update` / `group.rename` / `group.move` / `group.delete` (fatto: ciclo completo APPLIED, delete con approval)
+- [x] `ou.create` / `ou.rename` / `ou.move` / `ou.delete` (fatto: ciclo completo APPLIED, move/delete con approval)
 - [ ] casi negativi: target in `OU=Unmanaged`, gruppo protetto (`Domain Admins`), replay di nonce, tenant mismatch
 - [ ] `operation.get`/`operation.list` e `audit.get`/`audit.export`
 - [ ] grep dei log: nessun segreto (password bind, password reset, JWT) in log/audit/risposte
@@ -332,6 +333,21 @@ Tutti trovati proprio grazie a questo lab e coperti da test di regressione
    legacy), così l'unlock su un account davvero bloccato non risponde più
    `NO_OP`. In lab il blocco si provoca solo con tentativi errati: AD vieta di
    scrivere `lockoutTime` a valori non-zero (`Set-ADUser`/ADSI danno errore 87/E_FAIL).
+7. **Scope route ≠ scope catalogo policy** — enable/disable chiedeva
+   `ad.account.state.write` sulla route e `ad.account.enable/disable` nel
+   catalogo; rename/move utente lo stesso con `ad.user.lifecycle.write`.
+   Allineati ai valori canonici del piano §12 (altrimenti doppio scope nel
+   token per far passare entrambi i controlli).
+8. **Replay idempotente senza DC persistito** — il replay di una
+   `Idempotency-Key` già registrata ricostruiva `source_dc=""` (il record
+   persistito non salva `selected_dc`) e pydantic rifiutava il `MutationResult`
+   ("String should have at least 1 character"). Ora il replay usa il DC del
+   servizio come fallback (`or "unknown"`), con test di regressione.
+9. **`group.create` → 500 INTERNAL_ERROR** — `groupType` è un intero
+   (`-2147483646` = global security) e la creazione faceva `list(int)` →
+   `TypeError`. Ora i valori scalari vengono normalizzati in lista
+   (`_add_values`) per user/group/OU; l'handler 500 logga anche il traceback
+   per diagnosi future.
 
 ## 8. Troubleshooting (errori realmente incontrati)
 
@@ -354,6 +370,11 @@ Tutti trovati proprio grazie a questo lab e coperti da test di regressione
 | `Set-ADUser ... lockoutTime` errore 87 o ADSI `E_FAIL` | AD vieta la scrittura di `lockoutTime` non-zero (solo `0` = unlock è permesso) | per bloccare: `Set-ADDefaultDomainPasswordPolicy -LockoutThreshold 5 ...` + 6 `net use` con password errata verso `\\DC01\IPC$` |
 | `Set-ADDefaultDomainPasswordPolicy` errore 87 | manca `-Identity` e/o `LockoutDuration < LockoutObservationWindow` | `-Identity "corp.test.local" -LockoutDuration 01:00:00 -LockoutObservationWindow 00:15:00` |
 | unlock risponde `NO_OP` | l'account non era bloccato al momento della chiamata (blocco auto-scaduto) | rifai il lockout e richiama subito; durata ≥ 15 min per non correre |
+| `403 CALLER_FORBIDDEN: Missing required scopes` | il token non ha lo scope canonico (route e/o catalogo) | riemetti il token con lo scope della capability (tabella §5; valori piano §12) |
+| `409 APPROVAL_REQUIRED` | capability con approval mode REQUIRED senza oggetto `approval` | aggiungi `approval` (approval_id, approved_by, approved_at fresco) nel body |
+| `REQUEST_INVALID: 1 validation error for MutationResult ... source_dc` | replay di una key già registrata (bug storico, corretto) | aggiorna il repo e riavvia l'API; per rieseguire davvero usa una **key nuova** |
+| `500 INTERNAL_ERROR: internal connector error` | eccezione non mappata (es. bug su valore scalare nel create) | guarda il traceback nel log dell'API (`unhandled connector error` + correlation_id), aggiorna il repo e riavvia; retry con key nuova |
+| `ou.create` 403 nonostante la delega | l'ACE per la classe `organizationalUnit` manca (il wizard a volte non la applica) | aggiungi CreateChild/DeleteChild per `organizationalUnit` via ADSI (`ObjectSecurity.AddAccessRule` + `CommitChanges`) e verifica con `dsacls ... \| findstr /i organizationalUnit` |
 
 ## 9. Riferimenti utili
 

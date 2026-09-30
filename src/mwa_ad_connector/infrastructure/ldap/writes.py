@@ -24,6 +24,13 @@ from mwa_ad_connector.infrastructure.ldap.mutations import (
 )
 
 
+def _add_values(value: Any) -> list[Any]:  # noqa: ANN401 - attribute values are heterogeneous.
+    """Normalize an attribute value for ``conn.add`` (scalars become one-item lists)."""
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
 class LdapAdapterWrites(LdapAdapterCore):
     """GUID-keyed mutations; DNs are refreshed immediately before each write."""
 
@@ -146,7 +153,7 @@ class LdapAdapterWrites(LdapAdapterCore):
         dn = f"CN={sam_str},{validate_dn_syntax(parent_dn)}"
 
         def _op(conn: Any) -> None:
-            ldap_attrs = {k: ([v] if isinstance(v, str) else list(v)) for k, v in attributes.items()}
+            ldap_attrs = {k: _add_values(v) for k, v in attributes.items()}
             conn.add(dn, ["top", "person", "organizationalPerson", "user"], ldap_attrs)
             _check(conn, "add")
 
@@ -172,7 +179,7 @@ class LdapAdapterWrites(LdapAdapterCore):
         dn = f"CN={group_name},{validate_dn_syntax(parent_dn)}"
 
         def _op(conn: Any) -> None:
-            ldap_attrs = {k: ([v] if isinstance(v, str) else list(v)) for k, v in attributes.items()}
+            ldap_attrs = {k: _add_values(v) for k, v in attributes.items()}
             conn.add(dn, ["top", "group"], ldap_attrs)
             _check(conn, "add-group")
 
