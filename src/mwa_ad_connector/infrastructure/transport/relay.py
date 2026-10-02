@@ -150,7 +150,7 @@ class ServiceBusRelay:
         """
         self.connection_string = connection_string
         self.command_queue = command_queue or queue_name
-        self.result_queue = result_queue
+        self.result_queue = result_queue or self.command_queue
         self.fully_qualified_namespace = fully_qualified_namespace
         self.queue_name = queue_name
         self._client_factory = client_factory
@@ -203,6 +203,13 @@ class ServiceBusRelay:
         correlation = str(correlation_id) if correlation_id else None
         return ServiceBusMessage(json.dumps(body), message_id=message_id, correlation_id=correlation)
 
+    async def _dead_letter_malformed(self, receiver: Any, message: Any) -> None:
+        """Best-effort dead-letter a malformed envelope so it cannot poison the queue."""
+        try:
+            await receiver.dead_letter_message(message, reason="MALFORMED_ENVELOPE")
+        except Exception as exc:  # noqa: BLE001 - best effort; never break the receive loop.
+            logger.warning("service bus dead-letter failed", error=type(exc).__name__)
+
     async def receive(self, timeout_seconds: float = 1.0) -> RelayMessage | None:
         """Receive one command message, decoding its JSON body (None on timeout)."""
         self._require_config()
@@ -212,10 +219,14 @@ class ServiceBusRelay:
             if not messages:
                 return None
             message = messages[0]
-            decoded = json.loads(str(message))
+            try:
+                decoded = json.loads(str(message))
+            except ValueError:
+                decoded = None
             if not isinstance(decoded, dict):
-                raise TransportError("Service Bus message body is not a JSON object.")
-            message_id = str(message.message_id)
+                await self._dead_letter_malformed(receiver, message)
+                return None
+            message_id = str(message.message_id) if message.message_id else f"msg-{uuid.uuid4().hex}"
             self._pending[message_id] = (receiver, message)
             return RelayMessage(
                 message_id=message_id,
@@ -226,12 +237,12 @@ class ServiceBusRelay:
             raise
         except Exception as exc:  # noqa: BLE001 - SDK faults map to a generic transport error.
             logger.warning("service bus receive failed", error=type(exc).__name__)
-            raise TransportError("Service Bus receive failed.") from exc
+            raise TransportError("Service Bus receive failed.") from None
 
     async def ack(self, message_id: str) -> None:
         """Complete the pending message (at-least-once: only after success)."""
         self._require_config()
-        entry = self._pending.pop(message_id, None)
+        entry = self._pending.get(message_id)
         if entry is None:
             logger.debug("service bus ack for unknown message", message_id=message_id)
             return
@@ -240,12 +251,14 @@ class ServiceBusRelay:
             await receiver.complete_message(message)
         except Exception as exc:  # noqa: BLE001 - SDK faults map to a generic transport error.
             logger.warning("service bus ack failed", error=type(exc).__name__)
-            raise TransportError("Service Bus acknowledge failed.") from exc
+            raise TransportError("Service Bus acknowledge failed.") from None
+        finally:
+            self._pending.pop(message_id, None)
 
     async def abandon(self, message_id: str) -> None:
         """Release the pending message for redelivery (transient failure path)."""
         self._require_config()
-        entry = self._pending.pop(message_id, None)
+        entry = self._pending.get(message_id)
         if entry is None:
             logger.debug("service bus abandon for unknown message", message_id=message_id)
             return
@@ -254,7 +267,9 @@ class ServiceBusRelay:
             await receiver.abandon_message(message)
         except Exception as exc:  # noqa: BLE001 - SDK faults map to a generic transport error.
             logger.warning("service bus abandon failed", error=type(exc).__name__)
-            raise TransportError("Service Bus abandon failed.") from exc
+            raise TransportError("Service Bus abandon failed.") from None
+        finally:
+            self._pending.pop(message_id, None)
 
     async def publish_result(self, result: dict[str, Any]) -> None:
         """Publish a redacted result on the result queue, carrying correlation."""
@@ -266,7 +281,7 @@ class ServiceBusRelay:
             raise
         except Exception as exc:  # noqa: BLE001 - SDK faults map to a generic transport error.
             logger.warning("service bus publish_result failed", error=type(exc).__name__)
-            raise TransportError("Service Bus result publish failed.") from exc
+            raise TransportError("Service Bus result publish failed.") from None
 
     async def publish(self, envelope: dict[str, Any]) -> str:
         """Publish an envelope on the command queue; returns the assigned id."""
@@ -280,10 +295,12 @@ class ServiceBusRelay:
             raise
         except Exception as exc:  # noqa: BLE001 - SDK faults map to a generic transport error.
             logger.warning("service bus publish failed", error=type(exc).__name__)
-            raise TransportError("Service Bus publish failed.") from exc
+            raise TransportError("Service Bus publish failed.") from None
 
     async def close(self) -> None:
         """Close receivers, senders and the underlying client if created."""
+        # Clearing pending here intentionally does not settle: unacked messages stay
+        # locked until the broker lock expires, preserving at-least-once redelivery.
         self._pending.clear()
         stack = self._stack
         self._stack = AsyncExitStack()

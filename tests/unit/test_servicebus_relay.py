@@ -17,8 +17,15 @@ RESULT_QUEUE = "ad-results"
 class FakeMessage:
     """Minimal ServiceBusReceivedMessage double: str() yields the JSON body."""
 
-    def __init__(self, envelope: dict[str, Any], *, message_id: str = "", delivery_count: int = 1) -> None:
-        self._body = json.dumps(envelope)
+    def __init__(
+        self,
+        envelope: dict[str, Any] | None = None,
+        *,
+        message_id: str | None = "",
+        delivery_count: int = 1,
+        raw_body: str | None = None,
+    ) -> None:
+        self._body = raw_body if raw_body is not None else json.dumps(envelope)
         self.message_id = message_id
         self.delivery_count = delivery_count
 
@@ -33,9 +40,12 @@ class FakeReceiver:
         self._messages = list(messages)
         self.completed: list[FakeMessage] = []
         self.abandoned: list[FakeMessage] = []
+        self.dead_lettered: list[tuple[FakeMessage, str | None]] = []
         self.receive_calls: list[tuple[int, float | None]] = []
         self.opened = False
         self.closed = False
+        self.complete_error = False
+        self.dead_letter_error = False
 
     async def __aenter__(self) -> FakeReceiver:
         self.opened = True
@@ -53,10 +63,17 @@ class FakeReceiver:
         return [self._messages.pop(0)]
 
     async def complete_message(self, message: FakeMessage) -> None:
+        if self.complete_error:
+            raise RuntimeError(f"sdk failure with {CONN}")
         self.completed.append(message)
 
     async def abandon_message(self, message: FakeMessage) -> None:
         self.abandoned.append(message)
+
+    async def dead_letter_message(self, message: FakeMessage, reason: str | None = None) -> None:
+        if self.dead_letter_error:
+            raise RuntimeError(f"sdk failure with {CONN}")
+        self.dead_lettered.append((message, reason))
 
 
 class FakeSender:
@@ -65,6 +82,7 @@ class FakeSender:
     def __init__(self) -> None:
         self.sent: list[Any] = []
         self.opened = False
+        self.send_error = False
 
     async def __aenter__(self) -> FakeSender:
         self.opened = True
@@ -74,6 +92,8 @@ class FakeSender:
         return None
 
     async def send_messages(self, message: Any) -> None:
+        if self.send_error:
+            raise RuntimeError(f"sdk failure with {CONN}")
         self.sent.append(message)
 
 
@@ -151,6 +171,42 @@ async def test_receive_defaults_delivery_count() -> None:
     assert message.delivery_count == 1
 
 
+@pytest.mark.parametrize("raw_body", ["{not valid json", "[1, 2, 3]"])
+async def test_receive_dead_letters_malformed_body_and_does_not_track(raw_body: str) -> None:
+    """A non-JSON-object body is dead-lettered, untracked and never raised."""
+    client = FakeClient([FakeMessage(raw_body=raw_body, message_id="sb-bad")])
+    relay = _relay(client)
+
+    result = await relay.receive()
+
+    assert result is None
+    assert len(client.command_receiver.dead_lettered) == 1
+    dead, reason = client.command_receiver.dead_lettered[0]
+    assert reason == "MALFORMED_ENVELOPE"
+    assert relay._pending == {}  # noqa: SLF001 - test-owned introspection.
+
+
+async def test_receive_dead_letter_failure_is_swallowed() -> None:
+    """A failing dead-letter call must not crash the receive loop."""
+    client = FakeClient([FakeMessage(raw_body="not-json", message_id="sb-bad")])
+    client.command_receiver.dead_letter_error = True
+    relay = _relay(client)
+
+    assert await relay.receive() is None
+
+
+@pytest.mark.parametrize("sdk_id", [None, ""])
+async def test_receive_generates_id_when_sdk_id_missing(sdk_id: str | None) -> None:
+    """A missing/empty SDK message id becomes a fresh uuid4, never 'None'."""
+    client = FakeClient([FakeMessage({"capability": "c"}, message_id=sdk_id)])
+    message = await _relay(client).receive()
+
+    assert message is not None
+    assert message.message_id != "None"
+    assert message.message_id.startswith("msg-")
+    assert len(message.message_id) == len("msg-") + 32
+
+
 async def test_ack_completes_the_pending_message() -> None:
     """ack() completes the SDK message and clears the pending entry."""
     source = FakeMessage({"capability": "c"}, message_id="sb-3")
@@ -162,6 +218,23 @@ async def test_ack_completes_the_pending_message() -> None:
     await relay.ack(received.message_id)
 
     assert client.command_receiver.completed == [source]
+
+
+async def test_ack_settles_then_pops_even_when_settlement_fails() -> None:
+    """A settlement failure still drops the pending handle and suppresses the cause."""
+    source = FakeMessage({"capability": "c"}, message_id="sb-fail")
+    client = FakeClient([source])
+    client.command_receiver.complete_error = True
+    relay = _relay(client)
+    received = await relay.receive()
+    assert received is not None
+
+    with pytest.raises(TransportError) as excinfo:
+        await relay.ack(received.message_id)
+
+    assert relay._pending == {}  # noqa: SLF001 - test-owned introspection.
+    assert excinfo.value.__cause__ is None
+    assert CONN not in str(excinfo.value)
 
 
 async def test_abandon_abandons_the_pending_message() -> None:
@@ -227,6 +300,19 @@ async def test_close_closes_client_and_receivers() -> None:
     assert client.closed is True
 
 
+async def test_legacy_queue_name_aliases_default_the_result_queue() -> None:
+    """Legacy kwargs route results to the command queue instead of an empty name."""
+    client = FakeClient([])
+    relay = ServiceBusRelay(CONN, queue_name="legacy-commands", client_factory=lambda: client)
+
+    assert relay.command_queue == "legacy-commands"
+    assert relay.result_queue == "legacy-commands"
+
+    await relay.publish_result({"state": "SUCCEEDED"})
+
+    assert client.created_senders == ["legacy-commands"]
+
+
 async def test_empty_config_fails_closed() -> None:
     """An unconfigured relay refuses every operation (fail-closed)."""
     relay = ServiceBusRelay()
@@ -244,7 +330,7 @@ async def test_empty_config_fails_closed() -> None:
 
 
 async def test_sdk_failure_is_mapped_without_leaking_details() -> None:
-    """SDK exceptions become a generic TransportError (no raw text/secrets)."""
+    """SDK exceptions become a generic TransportError (no raw text/secrets/cause)."""
     client = FakeClient(receiver_error=True)
     relay = _relay(client)
 
@@ -254,3 +340,18 @@ async def test_sdk_failure_is_mapped_without_leaking_details() -> None:
     message = str(excinfo.value)
     assert "sdk failure" not in message
     assert "SharedAccessKey" not in message
+    assert CONN not in message
+    assert excinfo.value.__cause__ is None
+
+
+async def test_publish_sdk_failure_suppresses_the_exception_chain() -> None:
+    """publish() maps SDK faults without retaining the secret-bearing cause."""
+    client = FakeClient([])
+    client.command_sender.send_error = True
+    relay = _relay(client)
+
+    with pytest.raises(TransportError) as excinfo:
+        await relay.publish({"capability": "c"})
+
+    assert excinfo.value.__cause__ is None
+    assert CONN not in str(excinfo.value)
