@@ -100,3 +100,17 @@ def test_non_mutation_envelope_with_identifier_is_valid() -> None:
     )
     assert model.capability == "group.get"
     assert model.target.requires_resolution is True
+
+
+def test_membership_accepts_member_guid_parameter() -> None:
+    """The runtime/HTTP convention (``member_guid``) is allowlisted."""
+    member_guid = "91faf0e8-cfb6-49ea-80a7-e621986443f8"
+    model = CommandEnvelope(**_envelope(parameters={"member_guid": member_guid}))
+    assert model.parameters == {"member_guid": member_guid}
+
+
+def test_membership_still_accepts_member_reference_parameter() -> None:
+    """The legacy ObjectReference ``member`` parameter remains valid."""
+    member = {"object_type": "USER", "object_guid": "91faf0e8-cfb6-49ea-80a7-e621986443f8"}
+    model = CommandEnvelope(**_envelope(parameters={"member": member}))
+    assert model.parameters == {"member": member}

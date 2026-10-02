@@ -23,8 +23,8 @@ from mwa_ad_connector.domain.operations import ApprovalContext, CapabilityReques
 
 #: Per-capability parameter allowlist (extra keys are rejected).
 PARAMETER_ALLOWLIST: dict[str, frozenset[str]] = {
-    "group.member.add": frozenset({"member"}),
-    "group.member.remove": frozenset({"member"}),
+    "group.member.add": frozenset({"member", "member_guid"}),
+    "group.member.remove": frozenset({"member", "member_guid"}),
     "account.password.reset": frozenset({"password"}),
     "account.password.force_change": frozenset({"force"}),
     "user.attributes.update": frozenset({"attributes"}),
