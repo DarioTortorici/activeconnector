@@ -1,17 +1,25 @@
-"""Relay abstraction: swappable outbound transport (in-memory default, Service Bus stub).
+"""Relay abstraction: swappable outbound transport (in-memory default, Service Bus).
 
 The core (worker, services) depends only on RelayTransport; concrete SDKs stay
 behind this boundary so at-least-once receive, dedup and result publishing are
-transport-agnostic.
+transport-agnostic. The Service Bus adapter imports the SDK lazily inside its
+methods, so the module stays importable without credentials or the package.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
+from collections.abc import Callable
+from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+
+from mwa_ad_connector.infrastructure.telemetry.logging import get_logger
+
+logger = get_logger("servicebus-relay")
 
 
 class TransportError(Exception):
@@ -112,50 +120,180 @@ class InMemoryRelay:
 
 
 class ServiceBusRelay:
-    """Azure Service Bus relay stub with the same interface (cloud-integration step).
+    """Azure Service Bus adapter implementing RelayTransport (lazy SDK import).
 
-    Raises TransportError on use until connection details and the SDK wiring land;
-    exists so call sites depend on the interface, never on the SDK.
+    The SDK client/receiver/senders are created on first use and reused; the
+    SDK stays behind the client_factory seam so tests inject fakes and never
+    touch the network. Empty configuration fails closed with TransportError.
     """
 
-    def __init__(self, *, fully_qualified_namespace: str = "", queue_name: str = "") -> None:
-        """Record (but do not connect to) the Service Bus endpoint.
+    def __init__(
+        self,
+        connection_string: str = "",
+        command_queue: str = "",
+        result_queue: str = "",
+        *,
+        client_factory: Callable[[], Any] | None = None,
+        fully_qualified_namespace: str = "",
+        queue_name: str = "",
+    ) -> None:
+        """Record the Service Bus endpoint and queue names (no connection yet).
 
         Args:
-            fully_qualified_namespace: Service Bus namespace host.
-            queue_name: Queue holding command envelopes.
+            connection_string: Service Bus connection string (secret).
+            command_queue: Queue carrying inbound command envelopes.
+            result_queue: Queue carrying outbound operation results.
+            client_factory: Optional zero-arg factory returning an async client
+                (tests/lab); when omitted the SDK client is built lazily.
+            fully_qualified_namespace: Deprecated alias; ignored (legacy call sites).
+            queue_name: Deprecated alias for command_queue (legacy call sites).
         """
+        self.connection_string = connection_string
+        self.command_queue = command_queue or queue_name
+        self.result_queue = result_queue
         self.fully_qualified_namespace = fully_qualified_namespace
         self.queue_name = queue_name
+        self._client_factory = client_factory
+        self._client: Any = None
+        self._receiver: Any = None
+        self._senders: dict[str, Any] = {}
+        self._pending: dict[str, tuple[Any, Any]] = {}
+        self._stack: AsyncExitStack = AsyncExitStack()
 
-    def _unavailable(self) -> TransportError:
-        """Build the not-yet-wired error (no SDK import at module load)."""
-        return TransportError(
-            "ServiceBusRelay is not wired in this build; configure the cloud-integration "
-            "transport or use InMemoryRelay for lab/tests."
-        )
+    def _require_config(self) -> None:
+        """Fail closed when no connection string was configured."""
+        if not self.connection_string:
+            raise TransportError("Service Bus relay is not configured; refusing to use it (fail-closed).")
+
+    def _get_client(self) -> Any:
+        """Return the cached async client, creating it lazily on first use."""
+        self._require_config()
+        if self._client is None:
+            if self._client_factory is not None:
+                self._client = self._client_factory()
+            else:
+                from azure.servicebus.aio import ServiceBusClient  # noqa: PLC0415 - lazy SDK import.
+
+                self._client = ServiceBusClient.from_connection_string(self.connection_string)
+        return self._client
+
+    async def _get_receiver(self) -> Any:
+        """Open (once) and return the command-queue receiver."""
+        if self._receiver is None:
+            candidate = self._get_client().get_queue_receiver(queue_name=self.command_queue)
+            self._receiver = await self._stack.enter_async_context(candidate)
+        return self._receiver
+
+    async def _get_sender(self, queue_name: str) -> Any:
+        """Open (once per queue) and return the sender for a queue."""
+        sender = self._senders.get(queue_name)
+        if sender is None:
+            candidate = self._get_client().get_queue_sender(queue_name=queue_name)
+            sender = await self._stack.enter_async_context(candidate)
+            self._senders[queue_name] = sender
+        return sender
+
+    @staticmethod
+    def _build_message(body: dict[str, Any], *, correlation_id: Any = None) -> Any:
+        """Build an SDK message carrying the JSON body and an optional correlation id."""
+        from azure.servicebus import ServiceBusMessage  # noqa: PLC0415 - lazy SDK import.
+
+        candidate = body.get("message_id")
+        message_id = str(candidate) if candidate else f"msg-{uuid.uuid4().hex}"
+        correlation = str(correlation_id) if correlation_id else None
+        return ServiceBusMessage(json.dumps(body), message_id=message_id, correlation_id=correlation)
 
     async def receive(self, timeout_seconds: float = 1.0) -> RelayMessage | None:
-        """Not wired: raise TransportError (same signature as the interface)."""
-        _ = timeout_seconds
-        raise self._unavailable()
+        """Receive one command message, decoding its JSON body (None on timeout)."""
+        self._require_config()
+        try:
+            receiver = await self._get_receiver()
+            messages = await receiver.receive_messages(max_message_count=1, max_wait_time=timeout_seconds)
+            if not messages:
+                return None
+            message = messages[0]
+            decoded = json.loads(str(message))
+            if not isinstance(decoded, dict):
+                raise TransportError("Service Bus message body is not a JSON object.")
+            message_id = str(message.message_id)
+            self._pending[message_id] = (receiver, message)
+            return RelayMessage(
+                message_id=message_id,
+                envelope=decoded,
+                delivery_count=message.delivery_count or 1,
+            )
+        except TransportError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - SDK faults map to a generic transport error.
+            logger.warning("service bus receive failed", error=type(exc).__name__)
+            raise TransportError("Service Bus receive failed.") from exc
 
     async def ack(self, message_id: str) -> None:
-        """Not wired: raise TransportError (same signature as the interface)."""
-        _ = message_id
-        raise self._unavailable()
+        """Complete the pending message (at-least-once: only after success)."""
+        self._require_config()
+        entry = self._pending.pop(message_id, None)
+        if entry is None:
+            logger.debug("service bus ack for unknown message", message_id=message_id)
+            return
+        receiver, message = entry
+        try:
+            await receiver.complete_message(message)
+        except Exception as exc:  # noqa: BLE001 - SDK faults map to a generic transport error.
+            logger.warning("service bus ack failed", error=type(exc).__name__)
+            raise TransportError("Service Bus acknowledge failed.") from exc
 
     async def abandon(self, message_id: str) -> None:
-        """Not wired: raise TransportError (same signature as the interface)."""
-        _ = message_id
-        raise self._unavailable()
+        """Release the pending message for redelivery (transient failure path)."""
+        self._require_config()
+        entry = self._pending.pop(message_id, None)
+        if entry is None:
+            logger.debug("service bus abandon for unknown message", message_id=message_id)
+            return
+        receiver, message = entry
+        try:
+            await receiver.abandon_message(message)
+        except Exception as exc:  # noqa: BLE001 - SDK faults map to a generic transport error.
+            logger.warning("service bus abandon failed", error=type(exc).__name__)
+            raise TransportError("Service Bus abandon failed.") from exc
 
     async def publish_result(self, result: dict[str, Any]) -> None:
-        """Not wired: raise TransportError (same signature as the interface)."""
-        _ = result
-        raise self._unavailable()
+        """Publish a redacted result on the result queue, carrying correlation."""
+        self._require_config()
+        try:
+            sender = await self._get_sender(self.result_queue)
+            await sender.send_messages(self._build_message(result, correlation_id=result.get("correlation_id")))
+        except TransportError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - SDK faults map to a generic transport error.
+            logger.warning("service bus publish_result failed", error=type(exc).__name__)
+            raise TransportError("Service Bus result publish failed.") from exc
 
     async def publish(self, envelope: dict[str, Any]) -> str:
-        """Not wired: raise TransportError (same signature as the interface)."""
-        _ = envelope
-        raise self._unavailable()
+        """Publish an envelope on the command queue; returns the assigned id."""
+        self._require_config()
+        try:
+            sender = await self._get_sender(self.command_queue)
+            message = self._build_message(envelope, correlation_id=envelope.get("correlation_id"))
+            await sender.send_messages(message)
+            return str(message.message_id)
+        except TransportError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - SDK faults map to a generic transport error.
+            logger.warning("service bus publish failed", error=type(exc).__name__)
+            raise TransportError("Service Bus publish failed.") from exc
+
+    async def close(self) -> None:
+        """Close receivers, senders and the underlying client if created."""
+        self._pending.clear()
+        stack = self._stack
+        self._stack = AsyncExitStack()
+        self._receiver = None
+        self._senders = {}
+        if stack is not None:  # pragma: no cover - always set by __init__.
+            with suppress(Exception):
+                await stack.aclose()
+        client = self._client
+        self._client = None
+        if client is not None:
+            with suppress(Exception):
+                await client.close()
