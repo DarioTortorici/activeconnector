@@ -3,6 +3,11 @@
 The wire model reuses domain contracts (:class:`ObjectReference`,
 domain :class:`ApprovalContext`, capability catalog) and converts to the
 domain :class:`CapabilityRequest` consumed by the orchestrator.
+
+For mutations, the ``target`` may carry either the stable ``object_guid`` or
+a resolvable identifier (``identifier_type`` + ``identifier_value``). The
+runtime resolves an identifier to a GUID before planning, so validation only
+requires that one identity path is present.
 """
 
 from __future__ import annotations
@@ -109,8 +114,8 @@ class CommandEnvelope(BaseModel):
                 raise ValueError("idempotency_key is required for mutations")
             if self.ticket_id is None:
                 raise ValueError("ticket_id is required for mutations")
-            if not self.target.has_stable_identity:
-                raise ValueError("mutations require target object_guid")
+            if not (self.target.has_stable_identity or self.target.requires_resolution):
+                raise ValueError("mutations require target object_guid or identifier")
         allowed = PARAMETER_ALLOWLIST.get(self.capability, frozenset())
         extra = set(self.parameters) - set(allowed)
         if extra:
