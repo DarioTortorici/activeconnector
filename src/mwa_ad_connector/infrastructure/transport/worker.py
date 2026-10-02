@@ -91,6 +91,12 @@ class OperationServiceDispatcher:
         """Execute the envelope capability via the operation service."""
         target = dict(envelope.get("target") or {})
         parameters = dict(envelope.get("parameters") or {})
+        # The cloud carries approval out-of-band (top-level approval_context);
+        # the service reads it from parameters["approval"], so merge a copy here
+        # without mutating the caller's parameter mapping.
+        approval = envelope.get("approval_context")
+        if isinstance(approval, Mapping) and approval:
+            parameters = {**parameters, "approval": dict(approval)}
         result = await self._service.execute_capability(
             capability=str(envelope.get("capability")),
             target=target,
@@ -256,6 +262,33 @@ class OutboundWorker:
             return "CONNECTOR_BINDING_MISMATCH"
         return None
 
+    @staticmethod
+    def _error_code(exc: Exception, classification: Mapping[str, Any]) -> str:
+        """Return the domain error code when exposed, else a stable handler code."""
+        code = getattr(exc, "code", None)
+        if isinstance(code, str) and code:
+            return code
+        return f"HANDLER_{classification['reason']}"
+
+    async def _publish_error_result(
+        self, message: RelayMessage, envelope: Mapping[str, Any], exc: Exception, classification: Mapping[str, Any]
+    ) -> None:
+        """Publish a redacted FAILED result for a terminal dispatch failure.
+
+        The cloud maps a missing correlated result to a retryable
+        ``CONNECTOR_UNAVAILABLE``; publishing the terminal outcome first keeps
+        not-found/denied/ambiguous/verification failures distinguishable. Only
+        the stable error code and correlation identifiers leave the process.
+        """
+        await self._relay.publish_result(
+            {
+                "state": "FAILED",
+                "error_code": self._error_code(exc, classification),
+                "correlation_id": envelope.get("correlation_id"),
+                "message_id": message.message_id,
+            }
+        )
+
     async def _handle_dispatch_error(self, message: RelayMessage, envelope: Mapping[str, Any], exc: Exception) -> None:
         """Abandon retryable failures or dead-letter terminal ones (at-least-once safe)."""
         classification = classify_transport_error(exc)
@@ -266,6 +299,7 @@ class OutboundWorker:
             self._metric("retried")
             logger.warning("transient failure, message abandoned", reason=classification["reason"])
         else:
+            await self._publish_error_result(message, envelope, exc, classification)
             await self._dead_letter(message, f"HANDLER_{classification['reason']}", envelope)
 
     @staticmethod

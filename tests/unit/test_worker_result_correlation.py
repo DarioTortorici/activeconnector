@@ -16,6 +16,7 @@ import pytest
 
 import mwa_ad_connector.entrypoints.worker as worker_entry
 from mwa_ad_connector.config.settings import ConnectorSettings
+from mwa_ad_connector.domain.errors import TargetNotFoundError
 from mwa_ad_connector.infrastructure.transport.relay import InMemoryRelay, ServiceBusRelay
 from mwa_ad_connector.infrastructure.transport.worker import (
     OperationServiceDispatcher,
@@ -200,6 +201,119 @@ def test_build_dispatcher_fails_closed_on_assembly_error(monkeypatch: pytest.Mon
 
     with pytest.raises(RuntimeError):
         worker_entry._build_dispatcher(_settings())  # noqa: SLF001
+
+
+class _RecordingService:
+    """Operation-service double capturing execute_capability parameters."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def execute_capability(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(kwargs)
+        return {"operation_id": "op-approval", "state": "AD_VERIFIED"}
+
+
+async def test_dispatch_forwards_approval_context_into_parameters() -> None:
+    """The dispatcher surfaces the envelope approval under parameters["approval"]."""
+    service = _RecordingService()
+    dispatcher = OperationServiceDispatcher(service)
+    approval = {"approval_id": "APR-1", "approved_by": ["ops@corp"], "approved_at": "2026-10-02T10:00:00Z"}
+    envelope = _envelope(
+        capability="account.disable",
+        parameters={"reason": "lab"},
+        approval_context=approval,
+    )
+
+    await dispatcher.dispatch(envelope)
+
+    assert service.calls[0]["parameters"] == {"reason": "lab", "approval": approval}
+    assert envelope["parameters"] == {"reason": "lab"}
+
+
+async def test_dispatch_without_approval_leaves_parameters_unchanged() -> None:
+    """Absent approval_context keeps the connector behavior identical."""
+    service = _RecordingService()
+    dispatcher = OperationServiceDispatcher(service)
+    envelope = _envelope(capability="account.disable", parameters={"reason": "lab"})
+
+    await dispatcher.dispatch(envelope)
+
+    assert service.calls[0]["parameters"] == {"reason": "lab"}
+
+
+class _OrderedRelay(InMemoryRelay):
+    """Relay double recording publish/ack/abandon ordering."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[tuple[str, Any]] = []
+
+    async def publish_result(self, result: dict[str, Any]) -> None:
+        self.events.append(("publish", dict(result)))
+        await super().publish_result(result)
+
+    async def ack(self, message_id: str) -> None:
+        self.events.append(("ack", message_id))
+        await super().ack(message_id)
+
+    async def abandon(self, message_id: str) -> None:
+        self.events.append(("abandon", message_id))
+        await super().abandon(message_id)
+
+
+class _TerminalFailingDispatcher:
+    """Dispatcher double raising a non-retryable domain error."""
+
+    async def dispatch(self, envelope: Any) -> dict[str, Any]:
+        raise TargetNotFoundError("on-prem target not found")
+
+
+class _RetryableFailingDispatcher:
+    """Dispatcher double raising a retryable dependency error."""
+
+    async def dispatch(self, envelope: Any) -> dict[str, Any]:
+        raise _RetryableFault("directory temporarily unavailable")
+
+
+class _RetryableFault(Exception):
+    """Transport fault exposing a retryable domain code/category."""
+
+    code = "LDAP_UNAVAILABLE"
+    category = "DEPENDENCY"
+
+
+async def test_terminal_dispatch_error_publishes_correlated_failed_result_before_ack() -> None:
+    """A terminal failure publishes a redacted FAILED result, then settles the message."""
+    relay = _OrderedRelay()
+    envelope = _envelope(capability="account.disable", parameters={"reason": "lab"})
+    worker = OutboundWorker(relay, _TerminalFailingDispatcher(), WorkerConfig(poll_timeout_seconds=0.01))
+    message_id = await relay.publish(envelope)
+
+    handled = await worker.process_one()
+
+    assert handled is True
+    assert [event[0] for event in relay.events] == ["publish", "ack"]
+    published = relay.events[0][1]
+    assert published["state"] == "FAILED"
+    assert published["error_code"] == "TARGET_NOT_FOUND"
+    assert published["correlation_id"] == envelope["correlation_id"]
+    assert published["message_id"] == message_id
+    assert relay.acked == [message_id]
+
+
+async def test_retryable_dispatch_error_abandons_without_publishing() -> None:
+    """A retryable failure is abandoned for redelivery and never publishes a result."""
+    relay = _OrderedRelay()
+    envelope = _envelope(capability="account.disable", parameters={"reason": "lab"})
+    worker = OutboundWorker(relay, _RetryableFailingDispatcher(), WorkerConfig(poll_timeout_seconds=0.01))
+    message_id = await relay.publish(envelope)
+
+    await worker.process_one()
+
+    assert relay.results == []
+    assert relay.abandoned == [message_id]
+    assert relay.acked == []
 
 
 async def test_close_relay_awaits_async_close_and_swallows_errors() -> None:
