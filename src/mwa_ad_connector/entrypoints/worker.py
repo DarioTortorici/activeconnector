@@ -1,59 +1,79 @@
-"""Worker process entrypoint: outbound relay consumer with graceful shutdown."""
+"""Worker process entrypoint: outbound relay consumer with graceful shutdown.
+
+The worker always runs the real runtime built by ``composition.build_runtime``;
+the cloud relay is Service Bus only when explicitly enabled and configured,
+otherwise the in-memory relay is used for lab/single-host operation. Assembly
+faults are fail-closed: the process refuses to start rather than run unverified.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import os
+import inspect
 import signal
 from contextlib import suppress
+from typing import Any
 
-from mwa_ad_connector.api.dependencies import get_settings
+from mwa_ad_connector.composition import build_runtime
+from mwa_ad_connector.config.settings import ConnectorSettings
 from mwa_ad_connector.infrastructure.telemetry.logging import configure_logging, get_logger
 from mwa_ad_connector.infrastructure.transport.relay import InMemoryRelay, ServiceBusRelay
 from mwa_ad_connector.infrastructure.transport.worker import OperationServiceDispatcher, OutboundWorker, WorkerConfig
 
-try:  # Optional services track: hard dependency only when running the worker process.
-    from mwa_ad_connector.application.services.operation_service import OperationService
-except ImportError:
-    OperationService = None  # type: ignore[assignment, misc]
-
 logger = get_logger("entrypoint-worker")
 
 
-def _build_relay() -> InMemoryRelay | ServiceBusRelay:
-    """Select the relay: Service Bus stub when configured, in-memory otherwise."""
-    namespace = os.environ.get("MWA_RELAY_NAMESPACE", "")
-    queue = os.environ.get("MWA_RELAY_QUEUE", "")
-    if namespace and queue:
-        logger.info("using ServiceBusRelay stub (wiring lands with cloud integration)")
-        return ServiceBusRelay(fully_qualified_namespace=namespace, queue_name=queue)
+def get_settings() -> ConnectorSettings:
+    """Load validated connector settings from the environment (fail-fast)."""
+    return ConnectorSettings()
+
+
+def _build_relay(settings: ConnectorSettings | None = None) -> InMemoryRelay | ServiceBusRelay:
+    """Select the relay from settings (Service Bus when enabled, in-memory otherwise)."""
+    resolved = settings if settings is not None else get_settings()
+    connection_string = (
+        resolved.servicebus_connection_string.get_secret_value() if resolved.servicebus_connection_string else ""
+    )
+    if resolved.servicebus_enabled and connection_string:
+        logger.info("using ServiceBusRelay", result_queue=resolved.servicebus_result_queue)
+        return ServiceBusRelay(
+            connection_string=connection_string,
+            command_queue=resolved.servicebus_command_queue,
+            result_queue=resolved.servicebus_result_queue,
+        )
     return InMemoryRelay()
 
 
-def _build_dispatcher() -> OperationServiceDispatcher:
-    """Build the dispatcher over the canonical operation service when available."""
-    if OperationService is None:
-        raise RuntimeError(
-            "No operation service is wired: the services track has not landed. Refusing to start (fail-closed)."
-        )
-    factory = getattr(OperationService, "default_instance", None)
-    if not callable(factory):
-        raise RuntimeError("OperationService exposes no default_instance assembly: refusing to start (fail-closed).")
+def _build_dispatcher(settings: ConnectorSettings | None = None) -> OperationServiceDispatcher:
+    """Build the dispatcher over the real runtime assembly (fail-closed)."""
+    resolved = settings if settings is not None else get_settings()
     try:
-        return OperationServiceDispatcher(factory())
+        runtime = build_runtime(resolved)
+        return OperationServiceDispatcher(runtime.api_service)
     except Exception as exc:
         raise RuntimeError(
-            "No operation service is wired: the services track assembly failed. Refusing to start (fail-closed)."
+            "No operation service is wired: the runtime assembly failed. Refusing to start (fail-closed)."
         ) from exc
+
+
+async def _close_relay(relay: Any) -> None:  # noqa: ANN401 - any RelayTransport implementation.
+    """Close the relay if it exposes a ``close`` (async or sync), best effort."""
+    closer = getattr(relay, "close", None)
+    if not callable(closer):
+        return
+    with suppress(Exception):
+        outcome = closer()
+        if inspect.isawaitable(outcome):
+            await outcome
 
 
 async def _run() -> None:
     """Run the worker until SIGINT/SIGTERM (graceful: in-flight message completes)."""
     settings = get_settings()
-    relay = _build_relay()
+    relay = _build_relay(settings)
     worker = OutboundWorker(
         relay,
-        _build_dispatcher(),
+        _build_dispatcher(settings),
         WorkerConfig(expected_tenant_id=settings.tenant_id, expected_connector_id=settings.connector_id),
     )
     loop = asyncio.get_running_loop()
@@ -61,7 +81,10 @@ async def _run() -> None:
         with suppress(NotImplementedError):  # Windows event loop policy lacks add_signal_handler.
             loop.add_signal_handler(sig, worker.stop)
     logger.info("starting worker", connector_id=settings.connector_id, tenant_id=settings.tenant_id)
-    await worker.run()
+    try:
+        await worker.run()
+    finally:
+        await _close_relay(relay)
 
 
 def main() -> None:

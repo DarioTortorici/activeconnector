@@ -268,6 +268,27 @@ class OutboundWorker:
         else:
             await self._dead_letter(message, f"HANDLER_{classification['reason']}", envelope)
 
+    @staticmethod
+    def _correlated(result: Mapping[str, Any], envelope: Mapping[str, Any], message: RelayMessage) -> dict[str, Any]:
+        """Attach the envelope correlation id and relay message id to a result.
+
+        The cloud correlates results by ``correlation_id`` and tracks
+        ``message_id``; both are forced here so a stale value carried by the
+        dispatcher result can never shadow the envelope correlation.
+
+        Args:
+            result: Redacted dispatcher result mapping.
+            envelope: Validated envelope carrying the authoritative correlation id.
+            message: Relay message whose id is reported back to the cloud.
+
+        Returns:
+            A copy of the result carrying the authoritative correlation/message ids.
+        """
+        published = dict(result)
+        published["message_id"] = message.message_id
+        published["correlation_id"] = envelope.get("correlation_id")
+        return published
+
     async def _observe_success(self, envelope: Mapping[str, Any], latency: float, state: str) -> None:
         """Best-effort success observation (never breaks the ack path)."""
         if self._metrics is None:
@@ -319,7 +340,7 @@ class OutboundWorker:
         envelope, key = prepared
 
         if key and key in self._dedup:
-            await self._relay.publish_result(dict(self._dedup[key]))
+            await self._relay.publish_result(self._correlated(self._dedup[key], envelope, message))
             await self._relay.ack(message.message_id)
             self._metric("acked")
             logger.info("duplicate delivery suppressed", dedup_key="***")
@@ -337,7 +358,7 @@ class OutboundWorker:
         if key:
             self._dedup[key] = redacted
         await self._observe_success(envelope, latency, str(result.get("state", "UNKNOWN")))
-        await self._relay.publish_result(redacted)
+        await self._relay.publish_result(self._correlated(redacted, envelope, message))
         await self._relay.ack(message.message_id)
         self._metric("acked")
         logger.info("message processed", capability=envelope.get("capability"), state=result.get("state"))

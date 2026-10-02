@@ -308,13 +308,10 @@ def test_entrypoints_wiring(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> N
     api_entry.main()
     assert launched["host"] == "127.0.0.1" and launched["port"] == 8443
 
-    monkeypatch.delenv("MWA_RELAY_NAMESPACE", raising=False)
     assert isinstance(worker_entry._build_relay(), InMemoryRelay)  # noqa: SLF001 - entrypoint seam check.
-    monkeypatch.setenv("MWA_RELAY_NAMESPACE", "ns")
-    monkeypatch.setenv("MWA_RELAY_QUEUE", "q")
+    monkeypatch.setenv("MWA_AD_SERVICEBUS_ENABLED", "true")
+    monkeypatch.setenv("MWA_AD_SERVICEBUS_CONNECTION_STRING", "Endpoint=sb://unit.test/;SharedAccessKey=s3cr3t")
     assert isinstance(worker_entry._build_relay(), relay_mod.ServiceBusRelay)  # noqa: SLF001 - entrypoint seam check.
-    with pytest.raises(RuntimeError):
-        worker_entry._build_dispatcher()  # noqa: SLF001 - entrypoint seam check.
 
 
 class _PagedService:
