@@ -91,6 +91,12 @@ class OperationServiceDispatcher:
         """Execute the envelope capability via the operation service."""
         target = dict(envelope.get("target") or {})
         parameters = dict(envelope.get("parameters") or {})
+        # The cloud carries approval out-of-band (top-level approval_context);
+        # the service reads it from parameters["approval"], so merge a copy here
+        # without mutating the caller's parameter mapping.
+        approval = envelope.get("approval_context")
+        if isinstance(approval, Mapping) and approval:
+            parameters = {**parameters, "approval": dict(approval)}
         result = await self._service.execute_capability(
             capability=str(envelope.get("capability")),
             target=target,
@@ -101,7 +107,9 @@ class OperationServiceDispatcher:
             ticket_id=envelope.get("ticket_id"),
             dry_run=bool(envelope.get("dry_run", False)),
         )
-        if not isinstance(result, dict) or not result.get("operation_id"):
+        if not isinstance(result, dict):
+            raise ValueError("Dispatcher returned a malformed result.")
+        if result.get("state") and not result.get("operation_id"):
             raise ValueError("Dispatcher returned a malformed result.")
         return result
 
@@ -254,6 +262,33 @@ class OutboundWorker:
             return "CONNECTOR_BINDING_MISMATCH"
         return None
 
+    @staticmethod
+    def _error_code(exc: Exception, classification: Mapping[str, Any]) -> str:
+        """Return the domain error code when exposed, else a stable handler code."""
+        code = getattr(exc, "code", None)
+        if isinstance(code, str) and code:
+            return code
+        return f"HANDLER_{classification['reason']}"
+
+    async def _publish_error_result(
+        self, message: RelayMessage, envelope: Mapping[str, Any], exc: Exception, classification: Mapping[str, Any]
+    ) -> None:
+        """Publish a redacted FAILED result for a terminal dispatch failure.
+
+        The cloud maps a missing correlated result to a retryable
+        ``CONNECTOR_UNAVAILABLE``; publishing the terminal outcome first keeps
+        not-found/denied/ambiguous/verification failures distinguishable. Only
+        the stable error code and correlation identifiers leave the process.
+        """
+        await self._relay.publish_result(
+            {
+                "state": "FAILED",
+                "error_code": self._error_code(exc, classification),
+                "correlation_id": envelope.get("correlation_id"),
+                "message_id": message.message_id,
+            }
+        )
+
     async def _handle_dispatch_error(self, message: RelayMessage, envelope: Mapping[str, Any], exc: Exception) -> None:
         """Abandon retryable failures or dead-letter terminal ones (at-least-once safe)."""
         classification = classify_transport_error(exc)
@@ -264,7 +299,29 @@ class OutboundWorker:
             self._metric("retried")
             logger.warning("transient failure, message abandoned", reason=classification["reason"])
         else:
+            await self._publish_error_result(message, envelope, exc, classification)
             await self._dead_letter(message, f"HANDLER_{classification['reason']}", envelope)
+
+    @staticmethod
+    def _correlated(result: Mapping[str, Any], envelope: Mapping[str, Any], message: RelayMessage) -> dict[str, Any]:
+        """Attach the envelope correlation id and relay message id to a result.
+
+        The cloud correlates results by ``correlation_id`` and tracks
+        ``message_id``; both are forced here so a stale value carried by the
+        dispatcher result can never shadow the envelope correlation.
+
+        Args:
+            result: Redacted dispatcher result mapping.
+            envelope: Validated envelope carrying the authoritative correlation id.
+            message: Relay message whose id is reported back to the cloud.
+
+        Returns:
+            A copy of the result carrying the authoritative correlation/message ids.
+        """
+        published = dict(result)
+        published["message_id"] = message.message_id
+        published["correlation_id"] = envelope.get("correlation_id")
+        return published
 
     async def _observe_success(self, envelope: Mapping[str, Any], latency: float, state: str) -> None:
         """Best-effort success observation (never breaks the ack path)."""
@@ -317,7 +374,7 @@ class OutboundWorker:
         envelope, key = prepared
 
         if key and key in self._dedup:
-            await self._relay.publish_result(dict(self._dedup[key]))
+            await self._relay.publish_result(self._correlated(self._dedup[key], envelope, message))
             await self._relay.ack(message.message_id)
             self._metric("acked")
             logger.info("duplicate delivery suppressed", dedup_key="***")
@@ -335,7 +392,7 @@ class OutboundWorker:
         if key:
             self._dedup[key] = redacted
         await self._observe_success(envelope, latency, str(result.get("state", "UNKNOWN")))
-        await self._relay.publish_result(redacted)
+        await self._relay.publish_result(self._correlated(redacted, envelope, message))
         await self._relay.ack(message.message_id)
         self._metric("acked")
         logger.info("message processed", capability=envelope.get("capability"), state=result.get("state"))

@@ -1,8 +1,9 @@
 """Secure configuration via Pydantic Settings (Step 4).
 
-Fail-fast: missing boundaries, out-of-scope OUs, insecure channels or
-incoherent auth settings raise at startup before any LDAP bind.
-No production defaults for customer data, DNs or secrets.
+Fail-fast: missing boundaries, out-of-scope OUs, insecure channels,
+incoherent auth settings or an enabled cloud relay without credentials raise
+at startup before any LDAP bind. No production defaults for customer data,
+DNs or secrets.
 """
 
 from __future__ import annotations
@@ -58,6 +59,10 @@ class ConnectorSettings(BaseSettings):
         ldap_connect_timeout_seconds: LDAPS TCP connect timeout.
         ldap_operation_timeout_seconds: LDAPS per-operation timeout.
         ldap_pool_size: Maximum concurrent LDAPS connections.
+        servicebus_enabled: Select the Azure Service Bus relay over in-memory.
+        servicebus_connection_string: Service Bus credential (never logged).
+        servicebus_command_queue: Queue carrying inbound command envelopes.
+        servicebus_result_queue: Queue carrying outbound operation results.
     """
 
     model_config = SettingsConfigDict(extra="forbid", env_prefix="MWA_AD_", env_nested_delimiter="__")
@@ -98,6 +103,10 @@ class ConnectorSettings(BaseSettings):
     ldap_connect_timeout_seconds: float = Field(default=10.0, gt=0, le=300)
     ldap_operation_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     ldap_pool_size: int = Field(default=10, ge=1, le=1000)
+    servicebus_enabled: bool = False
+    servicebus_connection_string: SecretStr | None = None
+    servicebus_command_queue: str = Field(default="ad-commands", min_length=1, max_length=256)
+    servicebus_result_queue: str = Field(default="ad-results", min_length=1, max_length=256)
 
     @field_validator("base_dn", "managed_ous")
     @classmethod
@@ -151,6 +160,8 @@ class ConnectorSettings(BaseSettings):
             raise ValueError(f"{self.auth_mode} auth_mode must not carry a static bind_password")
         if self.auth_mode == "simple" and self.bind_password is None:
             raise ValueError("simple auth_mode requires bind_password")
+        if self.servicebus_enabled and self.servicebus_connection_string is None:
+            raise ValueError("servicebus_enabled requires servicebus_connection_string")
         return self
 
     def model_dump_redacted(self) -> dict[str, object]:
@@ -165,6 +176,7 @@ class ConnectorSettings(BaseSettings):
         data["bind_user"] = "***REDACTED***" if self.bind_user else None
         data["jwt_secret"] = _REDACTED
         data["page_token_secret"] = _REDACTED
+        data["servicebus_connection_string"] = _REDACTED if self.servicebus_connection_string is not None else None
         return data
 
 

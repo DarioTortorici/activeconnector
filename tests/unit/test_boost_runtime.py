@@ -31,20 +31,22 @@ from mwa_ad_connector.operations.idempotency import IdempotencyCollision
 from mwa_ad_connector.runtime.health import collect_readiness
 
 
-def _settings() -> ConnectorSettings:
-    return ConnectorSettings(
-        customer_id="cust-lab",
-        tenant_id="tenant-lab",
-        connector_id="connector-lab-01",
-        forest_id="forest-lab",
-        domain_id="domain-lab",
-        base_dn="DC=lab,DC=local",
-        managed_ous=["OU=Users,DC=lab,DC=local"],
-        dc_host="dc-lab.local",
-        ldaps_require_cert=False,
-        jwt_secret="boost-test-jwt-secret",  # noqa: S106 - test-only HMAC key.
-        page_token_secret="boost-test-page-secret",  # noqa: S106 - test-only HMAC key.
-    )
+def _settings(**overrides: Any) -> ConnectorSettings:
+    values: dict[str, Any] = {
+        "customer_id": "cust-lab",
+        "tenant_id": "tenant-lab",
+        "connector_id": "connector-lab-01",
+        "forest_id": "forest-lab",
+        "domain_id": "domain-lab",
+        "base_dn": "DC=lab,DC=local",
+        "managed_ous": ["OU=Users,DC=lab,DC=local"],
+        "dc_host": "dc-lab.local",
+        "ldaps_require_cert": False,
+        "jwt_secret": "boost-test-jwt-secret",  # noqa: S106 - test-only HMAC key.
+        "page_token_secret": "boost-test-page-secret",  # noqa: S106 - test-only HMAC key.
+    }
+    values.update(overrides)
+    return ConnectorSettings(**values)
 
 
 def _envelope(**overrides: Any) -> dict[str, Any]:
@@ -185,14 +187,19 @@ def test_ports_modules_importable() -> None:
 
 
 def test_entrypoint_relay_selection(monkeypatch: Any) -> None:
-    monkeypatch.delenv("MWA_RELAY_NAMESPACE", raising=False)
-    monkeypatch.delenv("MWA_RELAY_QUEUE", raising=False)
-    assert isinstance(_build_relay(), InMemoryRelay)
-    monkeypatch.setenv("MWA_RELAY_NAMESPACE", "ns-test")
-    monkeypatch.setenv("MWA_RELAY_QUEUE", "q-test")
-    assert isinstance(_build_relay(), ServiceBusRelay)
+    assert isinstance(_build_relay(_settings()), InMemoryRelay)
+    enabled = _settings(
+        servicebus_enabled=True,
+        servicebus_connection_string="Endpoint=sb://unit.test/;SharedAccessKey=s3cr3t",
+    )
+    assert isinstance(_build_relay(enabled), ServiceBusRelay)
+
+    def _boom(settings: Any) -> Any:
+        raise ValueError("assembly failed")
+
+    monkeypatch.setattr("mwa_ad_connector.entrypoints.worker.build_runtime", _boom)
     with pytest.raises(RuntimeError):
-        _build_dispatcher()
+        _build_dispatcher(_settings())
 
 
 def test_command_dispatcher_register() -> None:
