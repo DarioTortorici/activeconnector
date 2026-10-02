@@ -101,7 +101,9 @@ class OperationServiceDispatcher:
             ticket_id=envelope.get("ticket_id"),
             dry_run=bool(envelope.get("dry_run", False)),
         )
-        if not isinstance(result, dict) or not result.get("operation_id"):
+        if not isinstance(result, dict):
+            raise ValueError("Dispatcher returned a malformed result.")
+        if result.get("state") and not result.get("operation_id"):
             raise ValueError("Dispatcher returned a malformed result.")
         return result
 

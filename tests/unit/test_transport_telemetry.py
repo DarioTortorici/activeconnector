@@ -183,14 +183,14 @@ async def test_worker_retryable_abandon_and_poison_dlq() -> None:
 
 
 async def test_operation_service_dispatcher_malformed() -> None:
-    """Dispatcher adapter rejects malformed service results."""
+    """Dispatcher adapter rejects mutation results that lack an operation id."""
 
     class Bad:
         async def execute_capability(self, **kwargs: Any) -> Any:
-            return {"nope": True}
+            return {"state": "AD_VERIFIED"}
 
     with pytest.raises(ValueError):
-        await OperationServiceDispatcher(Bad()).dispatch({"capability": "x"})
+        await OperationServiceDispatcher(Bad()).dispatch({"capability": "account.unlock"})
 
 
 async def test_canonical_adapter_round_trip() -> None:

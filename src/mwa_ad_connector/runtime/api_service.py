@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from mwa_ad_connector.api.schemas.operations import OPERATION_SEARCH_FILTERS
 from mwa_ad_connector.application.ports.directory_gateway import DirectoryGateway
+from mwa_ad_connector.application.services.identity_resolution_service import IdentityResolutionService
 from mwa_ad_connector.application.services.operation_service import OperationService
 from mwa_ad_connector.config.settings import ConnectorSettings
 from mwa_ad_connector.domain.capabilities import is_mutation_capability
@@ -69,6 +70,7 @@ class ApiOperationService:
         self._clock = clock
         self._reads = ReadDispatcher(settings, gateway, clock)
         self._callbacks = MutationCallbacks(gateway, settings, clock, scope_checker)
+        self._identity = IdentityResolutionService(gateway, domain_id=settings.domain_id, forest_id=settings.forest_id)
 
     async def execute_capability(  # noqa: PLR0913 - port signature mirrors the capability contract.
         self,
@@ -124,6 +126,8 @@ class ApiOperationService:
         self._callbacks.validate(capability, parameters)
         domain_caller = caller_to_domain(caller, self._settings, now=self._clock.now())
         ref = self._target_reference(capability, target)
+        if ref.requires_resolution:
+            ref = await self._identity.resolve(ref)
         plan = await self._callbacks.plan(capability, ref, parameters)
         effective_dry_run = True if self._settings.validation_mode_only else dry_run
         approval_values = parse_approval(parameters)
