@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 import pytest
 
 from mwa_ad_connector.domain.objects import DirectoryUser
+from mwa_ad_connector.infrastructure.ldap.common import _USER_ALLOWLIST, _USER_ATTRS
 from mwa_ad_connector.infrastructure.ldap.mappings import _first, map_entry_to_user, parse_object_guid
 
 GUID = uuid.UUID("ad3e3006-dc80-46ff-b258-e438ce494c11")
@@ -106,3 +107,21 @@ def test_parse_object_guid_rejects_unknown_values() -> None:
         parse_object_guid(None)
     with pytest.raises(ValueError):
         parse_object_guid("{not-a-guid}")
+
+
+def test_user_read_projection_covers_writable_allowlist() -> None:
+    """Read-after-write must observe every writable user attribute.
+
+    Regression: givenName/sn were writable but absent from the read projection,
+    so a successful AD modify surfaced as FAILED_VERIFICATION (502).
+    """
+    requested = {name.lower() for name in _USER_ATTRS}
+    missing = sorted(name for name in _USER_ALLOWLIST if name not in requested)
+    assert missing == []
+
+
+def test_map_user_surfaces_givenname_and_sn() -> None:
+    user = _map(_real_entry(givenName=["Mario"], sn=["Rossi"]))
+    assert user.attributes.get("givenName") == ["Mario"]
+    assert user.attributes.get("sn") == ["Rossi"]
+

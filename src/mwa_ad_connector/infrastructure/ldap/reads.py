@@ -23,7 +23,7 @@ from mwa_ad_connector.infrastructure.ldap.mappings import map_entry_to_group, ma
 
 logger = logging.getLogger(__name__)
 
-_ALL_ATTRS = _USER_ATTRS + _GROUP_ATTRS + _OU_ATTRS
+_ALL_ATTRS = list(dict.fromkeys(_USER_ATTRS + _GROUP_ATTRS + _OU_ATTRS))
 
 
 class LdapsCertificateError(DomainError):
