@@ -1,25 +1,28 @@
 name: deploy-lab
-# Replica del lab AD su Azure: DC su VM + connettore come Web App Linux
-# container sul piano esistente asp-helpdesk-prd-neu (nessun piano aggiuntivo).
+# Replica del lab AD su Azure, tutto in rg-aiw-agents-neu-001:
+# DC su VM + connettore come Web App Linux container sul piano esistente
+# asp-helpdesk-prd-neu (nessun piano aggiuntivo). Pull ACR via managed
+# identity + AcrPull (pattern di casa, niente password registry).
 # Solo manuale (workflow_dispatch): nessun deploy automatico su push.
 #
 # Prerequisiti una tantum (owner):
 # - Environment GitHub `lab` con i secret sotto elencati
-# - Admin user abilitato su crhelpdeskprd -> secret ACR_USERNAME/ACR_PASSWORD
+# - All'app OIDC del deploy: Contributor su rg-aiw-agents-neu-001,
+#   AcrPush + User Access Administrator su crhelpdeskprd
 on:
   workflow_dispatch: {}
 permissions:
   id-token: write
   contents: read
 env:
-  AZ_RG: rg-adlab
+  AZ_RG: rg-aiw-agents-neu-001
   AZ_REGION: northeurope
   VNET: adlab-vnet
   DC_VM: vm-dc01
   DC_IP: 10.20.1.4
-  WEBAPP_RG: rg-adlab
-  PLAN_ID: /subscriptions/0d6ce570-7813-445e-bb22-e35faf195918/resourceGroups/rg-aiw-agents-neu-001/providers/Microsoft.Web/serverfarms/asp-helpdesk-prd-neu
+  PLAN: asp-helpdesk-prd-neu
   WEBAPP: app-mwa-adconn-neu-001
+  ACR_NAME: crhelpdeskprd
   ACR_LOGIN: crhelpdeskprd.azurecr.io
   IMAGE: crhelpdeskprd.azurecr.io/mwa-ad-connector
   ST: stmadlabneu001
@@ -37,11 +40,10 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: RG, VNet, NSG, Storage
+      - name: VNet, NSG, Storage
         shell: bash
         run: |
           set -euo pipefail
-          az group create -n "$AZ_RG" -l "$AZ_REGION"
           az network vnet create -g "$AZ_RG" -n "$VNET" --address-prefix 10.20.0.0/16 \
             --subnet-name snet-dc --subnet-prefix 10.20.1.0/24 --dns-servers "$DC_IP" || true
           az network vnet subnet create -g "$AZ_RG" --vnet-name "$VNET" -n snet-webapp \
@@ -128,15 +130,17 @@ jobs:
     environment: lab
     steps:
       - uses: actions/checkout@v4
-      - name: Build and push connector image
-        env:
-          ACR_USER: ${{ secrets.ACR_USERNAME }}
-          ACR_PASS: ${{ secrets.ACR_PASSWORD }}
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Build and push connector image (OIDC needs AcrPush on the ACR)
+        shell: bash
         run: |
           set -euo pipefail
-          echo "$ACR_PASS" | docker login "$ACR_LOGIN" -u "$ACR_USER" --password-stdin
+          az acr login -n "$ACR_NAME"
           TAG=${GITHUB_SHA:0:7}
-          echo "TAG=$TAG" >> "$GITHUB_ENV"
           docker build -f packaging/container/Dockerfile.linux -t "$IMAGE:$TAG" .
           docker push "$IMAGE:$TAG"
   webapp:
@@ -154,38 +158,37 @@ jobs:
         with:
           name: dc-ca-pem
       - name: Create or update Web App on the existing plan
-        env:
-          ACR_USER: ${{ secrets.ACR_USERNAME }}
-          ACR_PASS: ${{ secrets.ACR_PASSWORD }}
+        shell: bash
         run: |
           set -euo pipefail
           TAG=${GITHUB_SHA:0:7}
-          if ! az webapp show -g "$WEBAPP_RG" -n "$WEBAPP" >/dev/null 2>&1; then
-            az webapp create -g "$WEBAPP_RG" -p "$PLAN_ID" -n "$WEBAPP" \
-              --deployment-container-image-name "$IMAGE:$TAG" \
-              --docker-registry-server-user "$ACR_USER" \
-              --docker-registry-server-password "$ACR_PASS"
+          if ! az webapp show -g "$AZ_RG" -n "$WEBAPP" >/dev/null 2>&1; then
+            az webapp create -g "$AZ_RG" -p "$PLAN" -n "$WEBAPP" \
+              --deployment-container-image-name "$IMAGE:$TAG"
           else
-            az webapp config container set -g "$WEBAPP_RG" -n "$WEBAPP" \
+            az webapp config container set -g "$AZ_RG" -n "$WEBAPP" \
               --docker-custom-image-name "$IMAGE:$TAG" \
-              --docker-registry-server-url "https://$ACR_LOGIN" \
-              --docker-registry-server-user "$ACR_USER" \
-              --docker-registry-server-password "$ACR_PASS"
+              --docker-registry-server-url "https://$ACR_LOGIN"
           fi
+          PID=$(az webapp identity assign -g "$AZ_RG" -n "$WEBAPP" --query principalId -o tsv)
+          echo "webapp identity: $PID"
+          ACR_ID=$(az acr show -g "$AZ_RG" -n "$ACR_NAME" --query id -o tsv 2>/dev/null || az acr show --name "$ACR_NAME" --query id -o tsv)
+          az role assignment create --assignee-object-id "$PID" --assignee-principal-type ServicePrincipal \
+            --role AcrPull --scope "$ACR_ID" || true
+          az webapp update -g "$AZ_RG" -n "$WEBAPP" \
+            --set siteConfig.acrUseManagedIdentityCreds=true siteConfig.alwaysOn=true \
+                  siteConfig.healthCheckPath=/api/v1/health
       - name: App settings (config + secrets + CA PEM)
         env:
           P_BIND: ${{ secrets.SVC_MWA_PASSWORD }}
           P_JWT: ${{ secrets.MWA_JWT_SECRET }}
           P_PAGE: ${{ secrets.MWA_PAGE_TOKEN_SECRET }}
-          ACR_USER: ${{ secrets.ACR_USERNAME }}
-          ACR_PASS: ${{ secrets.ACR_PASSWORD }}
         run: |
           python - <<'EOF'
           import json, os
           pem = open('dc-ca.pem', encoding='utf-8').read()
           base = {
               'WEBSITES_PORT': '8443',
-              'DOCKER_REGISTRY_SERVER_URL': 'https://crhelpdeskprd.azurecr.io',
               'MWA_AD_CUSTOMER_ID': 'customer-lab',
               'MWA_AD_TENANT_ID': 'tenant-lab',
               'MWA_AD_CONNECTOR_ID': 'connector-corp-01',
@@ -223,29 +226,25 @@ jobs:
               'MWA_AD_BIND_PASSWORD': os.environ['P_BIND'],
               'MWA_AD_JWT_SECRET': os.environ['P_JWT'],
               'MWA_AD_PAGE_TOKEN_SECRET': os.environ['P_PAGE'],
-              'DOCKER_REGISTRY_SERVER_USERNAME': os.environ['ACR_USER'],
-              'DOCKER_REGISTRY_SERVER_PASSWORD': os.environ['ACR_PASS'],
               'MWA_AD_TRUST_STORE_PEM': pem,
           }
           settings = [{'name': k, 'value': v} for k, v in {**base, **secrets}.items()]
           json.dump(settings, open('settings.json', 'w'))
           print(f'{len(settings)} app settings prepared')
           EOF
-          az webapp config appsettings set -g "$WEBAPP_RG" -n "$WEBAPP" --settings @settings.json
-      - name: Persistent state mount, VNet integration, health check
+          az webapp config appsettings set -g "$AZ_RG" -n "$WEBAPP" --settings @settings.json
+      - name: Persistent state mount, VNet integration, restart
         shell: bash
         run: |
           set -euo pipefail
           STKEY=$(az storage account keys list -g "$AZ_RG" -n "$ST" --query "[0].value" -o tsv)
-          az webapp config storage-account add -g "$WEBAPP_RG" -n "$WEBAPP" \
+          az webapp config storage-account add -g "$AZ_RG" -n "$WEBAPP" \
             --custom-id mwadstate --storage-type AzureFiles \
             --account-name "$ST" --share-name "$SHARE" --mount-path /mwa/state \
             --access-key "$STKEY" || true
-          az webapp vnet-integration add -g "$WEBAPP_RG" -n "$WEBAPP" \
+          az webapp vnet-integration add -g "$AZ_RG" -n "$WEBAPP" \
             --vnet "$VNET" --subnet snet-webapp || true
-          az webapp update -g "$WEBAPP_RG" -n "$WEBAPP" \
-            --set siteConfig.alwaysOn=true siteConfig.healthCheckPath=/api/v1/health
-          az webapp restart -g "$WEBAPP_RG" -n "$WEBAPP"
+          az webapp restart -g "$AZ_RG" -n "$WEBAPP"
           echo "URL: https://$WEBAPP.azurewebsites.net/api/v1/health"
   verify:
     needs: webapp
