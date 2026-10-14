@@ -36,16 +36,13 @@ jobs:
             --subnet-name snet-dc --subnet-prefix 10.20.1.0/24 --dns-servers "$DC_IP" || true
           az network vnet subnet create -g "$AZ_RG" --vnet-name "$VNET" -n snet-app \
             --address-prefix 10.20.2.0/24 || true
-          az network vnet subnet create -g "$AZ_RG" --vnet-name "$VNET" -n AzureBastionSubnet \
-            --address-prefix 10.20.3.0/26 || true
           az network nsg create -g "$AZ_RG" -n nsg-adlab || true
           az network vnet subnet update -g "$AZ_RG" --vnet-name "$VNET" -n snet-dc \
             --network-security-group nsg-adlab
           az network vnet subnet update -g "$AZ_RG" --vnet-name "$VNET" -n snet-app \
             --network-security-group nsg-adlab
-          az network public-ip create -g "$AZ_RG" -n pip-bastion --sku Standard || true
-          az network bastion create -g "$AZ_RG" -n bastion-adlab \
-            --public-ip-address pip-bastion --vnet-name "$VNET" -l "$AZ_REGION" || true
+          # Nota: niente Bastion/IP pubblici (scelta costo): niente RDP interattivo.
+          # Tutta l'interazione passa dal control plane Azure (run-command/extension).
       - name: Create VMs (skip if present)
         shell: bash
         env:
