@@ -15,6 +15,8 @@ import time
 import urllib.request
 
 BASE = os.environ["MWA_BASE_URL"].rstrip("/")
+if BASE.endswith("/api/v1"):
+    BASE = BASE[: -len("/api/v1")]
 SECRET = os.environ["MWA_JWT_SECRET"]
 TENANT = os.environ.get("MWA_TENANT_ID", "tenant-lab")
 CONNECTOR = os.environ.get("MWA_CONNECTOR_ID", "connector-corp-01")

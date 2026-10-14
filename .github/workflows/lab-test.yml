@@ -25,7 +25,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Connector health, resolve and update (e2e)
         env:
-          MWA_BASE_URL: https://app-mwa-adconn-neu-001.azurewebsites.net/api/v1
+          MWA_BASE_URL: https://app-mwa-adconn-neu-001.azurewebsites.net
           MWA_JWT_SECRET: ${{ secrets.MWA_JWT_SECRET }}
           MWA_E2E_APPLY: ${{ inputs.apply }}
         run: python scripts/azure/verify-cloud.py

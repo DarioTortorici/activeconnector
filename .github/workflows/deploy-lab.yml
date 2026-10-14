@@ -313,6 +313,6 @@ jobs:
             --query "value[0].message" -o tsv
       - name: Connector health, resolve, dry-run over public URL
         env:
-          MWA_BASE_URL: https://app-mwa-adconn-neu-001.azurewebsites.net/api/v1
+          MWA_BASE_URL: https://app-mwa-adconn-neu-001.azurewebsites.net
           MWA_JWT_SECRET: ${{ secrets.MWA_JWT_SECRET }}
         run: python scripts/azure/verify-cloud.py
