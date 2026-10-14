@@ -103,7 +103,21 @@ def main() -> int:
         },
     )
     print("dry-run:", status, dry.get("state"), dry.get("disposition"))
-    return 0 if status in (HTTP_OK, 202) else 1
+    if status not in (HTTP_OK, 202):
+        return 1
+    apply = os.environ.get("MWA_E2E_APPLY", "0").lower() in ("1", "true", "yes")
+    if not apply:
+        return 0
+    status, applied = call(
+        f"/api/v1/users/{guid}:update-attributes",
+        {"attributes": {"givenName": "Mario", "sn": "Rossi"}},
+        {
+            "Idempotency-Key": hashlib.sha256(os.urandom(16)).hexdigest(),
+            "X-Ticket-ID": "e2e-" + hashlib.sha256(os.urandom(8)).hexdigest()[:8],
+        },
+    )
+    print("apply:", status, applied.get("state"), applied.get("disposition"))
+    return 0 if status == HTTP_OK and applied.get("state") == "AD_VERIFIED" else 1
 
 
 if __name__ == "__main__":

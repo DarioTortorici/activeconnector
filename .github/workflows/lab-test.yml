@@ -1,0 +1,31 @@
+name: lab-test
+# End-to-end test against the already-deployed lab (no infrastructure changes).
+# Use after lab-start (or a full deploy-lab) to prove the flow:
+# health -> resolve tuser1 -> update attributes (dry-run, then real by default).
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Esegui una scrittura reale (APPLIED/AD_VERIFIED); se no solo dry-run"
+        type: boolean
+        default: true
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    environment: lab
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Connector health, resolve and update (e2e)
+        env:
+          MWA_BASE_URL: https://app-mwa-adconn-neu-001.azurewebsites.net/api/v1
+          MWA_JWT_SECRET: ${{ secrets.MWA_JWT_SECRET }}
+          MWA_E2E_APPLY: ${{ inputs.apply }}
+        run: python scripts/azure/verify-cloud.py
