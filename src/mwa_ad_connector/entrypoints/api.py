@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ssl
+
 import uvicorn
 
 from mwa_ad_connector.api.app import create_app
@@ -35,6 +37,18 @@ def _runtime_config(settings: ConnectorSettings) -> RuntimeConfig:
     )
 
 
+def _uvicorn_tls_kwargs(settings: ConnectorSettings) -> dict[str, object]:
+    """Build uvicorn SSL kwargs when the API serves TLS directly."""
+    if not settings.tls_enabled:
+        return {}
+    return {
+        "ssl_certfile": settings.tls_certfile,
+        "ssl_keyfile": settings.tls_keyfile,
+        "ssl_ca_certs": settings.tls_ca_certs,
+        "ssl_cert_reqs": ssl.CERT_REQUIRED if settings.tls_require_client_cert else ssl.CERT_NONE,
+    }
+
+
 def main() -> None:
     """Configure logging, wire the runtime, and serve the API with uvicorn."""
     configure_logging()
@@ -44,7 +58,13 @@ def main() -> None:
     logger.info("starting api", host=settings.api_host, port=settings.api_port, config=settings.model_dump_redacted())
     try:
         app = create_app(_runtime_config(settings), gateway=runtime.gateway, operation_service=runtime.api_service)
-        uvicorn.run(app, host=settings.api_host, port=settings.api_port, log_level="info")
+        uvicorn.run(
+            app,
+            host=settings.api_host,
+            port=settings.api_port,
+            log_level="info",
+            **_uvicorn_tls_kwargs(settings),  # type: ignore[arg-type]
+        )
     finally:
         runtime.close()
 

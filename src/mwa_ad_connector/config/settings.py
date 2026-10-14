@@ -54,6 +54,11 @@ class ConnectorSettings(BaseSettings):
         page_token_secret: HMAC key for opaque page tokens (required).
         api_host: API bind address.
         api_port: API bind port.
+        tls_enabled: Serve the API over HTTPS when True (default False, HTTP).
+        tls_certfile: Server certificate PEM path (required when TLS is on).
+        tls_keyfile: Server private key PEM path (required when TLS is on).
+        tls_ca_certs: CA bundle for client-certificate validation (mTLS).
+        tls_require_client_cert: Require and validate a client certificate.
         rate_limit_capacity: Token-bucket burst capacity.
         rate_limit_per_second: Token-bucket refill rate.
         state_dir: Directory holding the SQLite operation/audit stores.
@@ -98,6 +103,11 @@ class ConnectorSettings(BaseSettings):
     page_token_secret: SecretStr
     api_host: str = Field(default="127.0.0.1", max_length=256)
     api_port: int = Field(default=8443, ge=1, le=65535)
+    tls_enabled: bool = False
+    tls_certfile: str | None = Field(default=None, max_length=1024)
+    tls_keyfile: str | None = Field(default=None, max_length=1024)
+    tls_ca_certs: str | None = Field(default=None, max_length=1024)
+    tls_require_client_cert: bool = False
     rate_limit_capacity: int = Field(default=100, ge=1, le=100000)
     rate_limit_per_second: float = Field(default=10.0, gt=0, le=100000)
     state_dir: str = Field(default=".mwa-state", max_length=1024)
@@ -167,6 +177,12 @@ class ConnectorSettings(BaseSettings):
             raise ValueError("auth_mode=simple requires bind_password")
         if self.servicebus_enabled and self.servicebus_connection_string is None:
             raise ValueError("servicebus_enabled requires servicebus_connection_string")
+        if self.tls_enabled and (not self.tls_certfile or not self.tls_keyfile):
+            raise ValueError("tls_enabled requires tls_certfile and tls_keyfile")
+        if self.tls_require_client_cert and not self.tls_enabled:
+            raise ValueError("tls_require_client_cert requires tls_enabled")
+        if self.tls_require_client_cert and not self.tls_ca_certs:
+            raise ValueError("tls_require_client_cert requires tls_ca_certs")
         return self
 
     def model_dump_redacted(self) -> dict[str, object]:
