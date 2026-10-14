@@ -36,7 +36,7 @@ def _envelope(**overrides: Any) -> dict[str, Any]:
             "forest_id": "forest-lab",
         },
         "parameters": {"member": {"object_type": "USER", "object_guid": "91faf0e8-cfb6-49ea-80a7-e621986443f8"}},
-        "idempotency_key": "idem-12345678",
+        "idempotency_key": "idem-12345678",  # gitleaks:allow
         "correlation_id": "corr-12345678",
         "ticket_id": "TICKET-1",
         "requested_at": now.isoformat(),
