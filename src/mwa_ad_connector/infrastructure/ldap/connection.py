@@ -94,8 +94,8 @@ class LdapConnectionManager:
             Bound ldap3 Connection.
 
         Raises:
-            RuntimeError: If TLS is not enforced, Kerberos is requested,
-                or the bind fails.
+            RuntimeError: If plaintext LDAP is attempted, the bind secret is
+                missing, or the bind fails.
         """
         from ldap3 import Connection, Server  # noqa: PLC0415
 
