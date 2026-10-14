@@ -1,0 +1,170 @@
+name: deploy-lab
+# Replica del lab AD su Azure (VNet isolata): DC + VM app con connettore.
+# Solo manuale (workflow_dispatch): nessun deploy automatico su push.
+on:
+  workflow_dispatch: {}
+permissions:
+  id-token: write
+  contents: read
+env:
+  AZ_RG: rg-adlab
+  AZ_REGION: italynorth
+  VNET: adlab-vnet
+  DC_VM: vm-dc01
+  APP_VM: vm-app01
+  DC_IP: 10.20.1.4
+  APP_IP: 10.20.2.4
+  RAW_BASE: https://raw.githubusercontent.com/DarioTortorici/activeconnector/main/scripts/azure
+  REPO_SCRIPTS_RAW: https://raw.githubusercontent.com/DarioTortorici/activeconnector/main/scripts
+jobs:
+  infra:
+    runs-on: ubuntu-latest
+    environment: lab
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: RG, VNet, NSG, Bastion
+        shell: bash
+        run: |
+          set -euo pipefail
+          az group create -n "$AZ_RG" -l "$AZ_REGION"
+          az network vnet create -g "$AZ_RG" -n "$VNET" --address-prefix 10.20.0.0/16 \
+            --subnet-name snet-dc --subnet-prefix 10.20.1.0/24 --dns-servers "$DC_IP" || true
+          az network vnet subnet create -g "$AZ_RG" --vnet-name "$VNET" -n snet-app \
+            --address-prefix 10.20.2.0/24 || true
+          az network vnet subnet create -g "$AZ_RG" --vnet-name "$VNET" -n AzureBastionSubnet \
+            --address-prefix 10.20.3.0/26 || true
+          az network nsg create -g "$AZ_RG" -n nsg-adlab || true
+          az network vnet subnet update -g "$AZ_RG" --vnet-name "$VNET" -n snet-dc \
+            --network-security-group nsg-adlab
+          az network vnet subnet update -g "$AZ_RG" --vnet-name "$VNET" -n snet-app \
+            --network-security-group nsg-adlab
+          az network public-ip create -g "$AZ_RG" -n pip-bastion --sku Standard || true
+          az network bastion create -g "$AZ_RG" -n bastion-adlab \
+            --public-ip-address pip-bastion --vnet-name "$VNET" -l "$AZ_REGION" || true
+      - name: Create VMs (skip if present)
+        shell: bash
+        env:
+          LABADMIN_PASSWORD: ${{ secrets.LABADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if ! az vm show -g "$AZ_RG" -n "$DC_VM" >/dev/null 2>&1; then
+            az vm create -g "$AZ_RG" -n "$DC_VM" --image Win2022Datacenter \
+              --size Standard_B2ms --vnet-name "$VNET" --subnet snet-dc \
+              --private-ip-address "$DC_IP" --public-ip-address "" \
+              --admin-username labadmin --admin-password "$LABADMIN_PASSWORD"
+          else
+            echo "DC VM exists, skipping create"
+          fi
+          if ! az vm show -g "$AZ_RG" -n "$APP_VM" >/dev/null 2>&1; then
+            az vm create -g "$AZ_RG" -n "$APP_VM" --image Win2022Datacenter \
+              --size Standard_B2s --vnet-name "$VNET" --subnet snet-app \
+              --private-ip-address "$APP_IP" --public-ip-address "" \
+              --admin-username labadmin --admin-password "$LABADMIN_PASSWORD"
+          else
+            echo "App VM exists, skipping create"
+          fi
+  dc:
+    needs: infra
+    runs-on: ubuntu-latest
+    environment: lab
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: DC part 1 (AD DS role + promote, ends with reboot)
+        env:
+          P_DSRM: ${{ secrets.DSRM_PASSWORD }}
+        run: |
+          python -c "import json,os; json.dump({'commandToExecute': 'powershell -ExecutionPolicy Bypass -File .\\\\bootstrap-dc-part1.ps1 -DsrmPassword \\'' + os.environ['P_DSRM'] + '\\''}, open('ps1.json','w'))"
+          az vm extension set -g "$AZ_RG" --vm-name "$DC_VM" \
+            -n CustomScriptExtension --publisher Microsoft.Compute --version 1.10 --no-wait \
+            --settings "{\"fileUris\":[\"$RAW_BASE/bootstrap-dc-part1.ps1\"]}" \
+            --protected-settings @ps1.json || true
+      - name: Wait for DC reboot
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            if az vm run-command invoke -g "$AZ_RG" -n "$DC_VM" \
+              --command-id RunPowerShellScript --scripts "hostname" >/dev/null 2>&1; then
+              echo "DC back online"; break
+            fi
+            echo "waiting ($i/60)"; sleep 60
+          done
+      - name: DC part 2 (OUs, users, LDAPS, delegation)
+        env:
+          P_SVC: ${{ secrets.SVC_MWA_PASSWORD }}
+          P_TEST: ${{ secrets.TESTUSER_PASSWORD }}
+        run: |
+          python -c "import json,os; json.dump({'commandToExecute': 'powershell -ExecutionPolicy Bypass -File .\\\\bootstrap-dc-part2.ps1 -SvcPassword \\'' + os.environ['P_SVC'] + '\\' -TestPassword \\'' + os.environ['P_TEST'] + '\\''}, open('ps2.json','w'))"
+          az vm extension set -g "$AZ_RG" --vm-name "$DC_VM" \
+            -n CustomScriptExtension --publisher Microsoft.Compute --version 1.10 \
+            --settings "{\"fileUris\":[\"$RAW_BASE/bootstrap-dc-part2.ps1\",\"$RAW_BASE/Grant-MwaDelegation.ps1\",\"$REPO_SCRIPTS_RAW/dc_ldaps_cert.ps1\"]}" \
+            --protected-settings @ps2.json
+      - name: Fetch DC LDAPS public PEM (public cert, safe to handle)
+        shell: bash
+        run: |
+          set -euo pipefail
+          az vm run-command invoke -g "$AZ_RG" -n "$DC_VM" \
+            --command-id RunPowerShellScript \
+            --scripts "Get-Content C:\temp\dc-ldaps-cert.pem -Raw" \
+            --query "value[0].message" -o tsv > dc-ca.pem
+          head -c 120 dc-ca.pem
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dc-ca-pem
+          path: dc-ca.pem
+  app:
+    needs: dc
+    runs-on: ubuntu-latest
+    environment: lab
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dc-ca-pem
+      - name: Configure app VM (prereqs, repo, env, connector service)
+        env:
+          P_BIND: ${{ secrets.SVC_MWA_PASSWORD }}
+          P_JWT: ${{ secrets.MWA_JWT_SECRET }}
+          P_PAGE: ${{ secrets.MWA_PAGE_TOKEN_SECRET }}
+        run: |
+          CAB64=$(base64 -w0 dc-ca.pem)
+          CA_B64="$CAB64" python -c "import json,os; json.dump({'commandToExecute': 'powershell -ExecutionPolicy Bypass -File .\\\\configure-app.ps1 -BindPassword \\'' + os.environ['P_BIND'] + '\\' -JwtSecret \\'' + os.environ['P_JWT'] + '\\' -PageTokenSecret \\'' + os.environ['P_PAGE'] + '\\' -CaPemB64 \\'' + os.environ['CA_B64'] + '\\''}, open('ps3.json','w'))"
+          az vm extension set -g "$AZ_RG" --vm-name "$APP_VM" \
+            -n CustomScriptExtension --publisher Microsoft.Compute --version 1.10 \
+            --settings "{\"fileUris\":[\"$RAW_BASE/configure-app.ps1\"]}" \
+            --protected-settings @ps3.json
+  verify:
+    needs: app
+    runs-on: ubuntu-latest
+    environment: lab
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Verify (health, LDAPS, resolve, dry-run)
+        env:
+          P_JWT: ${{ secrets.MWA_JWT_SECRET }}
+        run: |
+          python -c "import json,os; json.dump({'commandToExecute': 'powershell -ExecutionPolicy Bypass -File .\\\\verify-lab.ps1 -JwtSecret \\'' + os.environ['P_JWT'] + '\\''}, open('ps4.json','w'))"
+          az vm extension set -g "$AZ_RG" --vm-name "$APP_VM" \
+            -n CustomScriptExtension --publisher Microsoft.Compute --version 1.10 \
+            --settings "{\"fileUris\":[\"$RAW_BASE/verify-lab.ps1\"]}" \
+            --protected-settings @ps4.json
