@@ -61,6 +61,15 @@ built-in TLS (`tls_enabled=true` plus `tls_certfile`/`tls_keyfile`, optionally
 `tls_require_client_cert=true` with `tls_ca_certs` for mTLS) or a supported
 reverse proxy that terminates TLS.
 
+## Cloud transport
+
+The on-prem worker receives command envelopes and publishes results through a
+swappable `RelayTransport`. Enable the real relay with
+`MWA_AD_SERVICEBUS_ENABLED=true` plus `MWA_AD_SERVICEBUS_CONNECTION_STRING`; the
+command and result queues default to `ad-commands` and `ad-results`. Without it,
+the in-memory relay is used for lab/single-host operation. Live on-prem↔cloud E2E
+requires lab Service Bus credentials; unit coverage runs against an injected fake.
+
 ## Non-objectives (initial release)
 
 No desktop GUI, no Lazarus/Pascal, no OpenRSAT port, no arbitrary LDAP query/PowerShell/shell

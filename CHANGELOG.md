@@ -16,8 +16,9 @@ versioning follows SemVer (RC → pilot → GA, see `RELEASE.md`).
 - Outbound worker (`infrastructure/transport/`): `OutboundWorker` with
   envelope validation, binding checks, poison handling, idempotent dedup,
   redacted result publish, graceful shutdown; `InMemoryRelay`,
-  `RelayTransport` protocol, `ServiceBusRelay` stub; backoff+jitter+budget
-  retry; redacted DLQ store; `CanonicalDispatcherAdapter` bridge.
+  `RelayTransport` protocol, and a real `ServiceBusRelay` (Azure SDK behind
+  a lazy, injectable seam); backoff+jitter+budget retry; redacted DLQ store;
+  `CanonicalDispatcherAdapter` bridge.
 - Observability (`infrastructure/telemetry/`): redacted structlog JSON,
   SLA-neutral Prometheus metrics, optional OpenTelemetry tracing.
 - Entrypoints: `mwa-api` (uvicorn) and `mwa-worker` (fail-closed without a
@@ -40,8 +41,6 @@ versioning follows SemVer (RC → pilot → GA, see `RELEASE.md`).
 
 ### Known limits
 
-- `mwa-worker` requires the services-track dispatcher assembly
-  (`OperationService.default_instance` or injected dispatcher).
-- `bootstrap.create_app` still references the Step-1 skeleton factory name;
-  use `api.app.create_app` / `entrypoints/*` (owning track to update).
 - Real-AD suites skip without `MWA_AD_LAB=1` + lab DC.
+- Live Azure Service Bus / Entra E2E requires lab credentials; unit coverage
+  uses the injected `client_factory` fake.
