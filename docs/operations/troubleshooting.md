@@ -9,7 +9,7 @@
 | `409 IDEMPOTENCY_COLLISION` | key reused, payload changed | new key or original payload |
 | `409 CONCURRENT_MODIFICATION` | stale `expected_version` | re-read, retry with fresh token |
 | `502 FAILED_VERIFICATION` | commit ok, verify failed | incident-response path, no blind retry |
-| `503 LDAP_UNAVAILABLE` | DC down / network | check DC, LDAPS cert, firewall 636 |
+| `503 LDAP_UNAVAILABLE` | DC down / network | check DC, LDAPS cert, firewall 636; failover per runbook "DC failover (manual)" |
 | `503 LDAPS_CERTIFICATE_INVALID` | expired/untrusted/host-mismatch cert | renew/fix chain; never downgrade |
 | `429 RATE_LIMITED` | burst over budget | back off per Retry-After |
 | `413 PAYLOAD_TOO_LARGE` | body > 1 MiB | paging/projection, shrink payload |

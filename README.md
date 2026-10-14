@@ -70,6 +70,16 @@ command and result queues default to `ad-commands` and `ad-results`. Without it,
 the in-memory relay is used for lab/single-host operation. Live on-prem↔cloud E2E
 requires lab Service Bus credentials; unit coverage runs against an injected fake.
 
+## Deployment / HA
+
+Single-DC is the supported topology: the connector pins `MWA_AD_DC_HOST` and
+reads/writes through it. If that DC is down, calls fail closed with
+`503 LDAP_UNAVAILABLE`. Failover is manual: repoint `MWA_AD_DC_HOST` to the
+standby DC and restart the service (see `docs/operations/runbook.md`).
+Multi-domain / multi-forest deployments run one connector instance per domain,
+each with its own single pinned DC, orchestrated externally. Automatic
+secondary-DC retry and distributed HA are not supported.
+
 ## Non-objectives (initial release)
 
 No desktop GUI, no Lazarus/Pascal, no OpenRSAT port, no arbitrary LDAP query/PowerShell/shell

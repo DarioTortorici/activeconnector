@@ -16,6 +16,18 @@ front it with a supported reverse proxy that terminates TLS. Enable
 `MWA_AD_TLS_REQUIRE_CLIENT_CERT=true` with `MWA_AD_TLS_CA_CERTS` for mTLS.
 Incomplete TLS config refuses to start.
 
+## DC failover (manual)
+
+1. Confirm the outage: readiness `ldap_connectivity` is `false` and calls return
+   `503 LDAP_UNAVAILABLE`.
+2. Verify the standby DC is reachable on LDAPS 636 and its certificate chains to
+   `MWA_AD_TRUST_STORE_PATH`.
+3. Update `MWA_AD_DC_HOST` to the standby DC in the service environment.
+4. `Stop-Service MWAADConnector`, then `Start-Service MWAADConnector`.
+5. Confirm `/api/v1/readiness` reports `ldap_connectivity` healthy and run a
+   resolve → unlock dry-run smoke.
+6. Record the failover in the incident log; do not edit operation or audit stores.
+
 ## Daily checks
 
 1. `GET /api/v1/health` → `HEALTHY` (anonymous).
