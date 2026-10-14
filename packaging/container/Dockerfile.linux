@@ -1,0 +1,49 @@
+# MWA AD Connector - Linux container for Azure App Service (lab).
+#
+# Mirrors the sibling agents' pattern (python:3.12-slim, uv, non-root,
+# PORT-driven). Pinned base digest matches entra-agent-app (linux/amd64
+# python:3.12-slim, resolved 2026-10-10):
+#   sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe
+ARG PYTHON_BASE_DIGEST="sha256:2b4f19dae3a777dfc3b76730bda1e82e1f66ab2a2686fa93ca78edbfb4f04ffe"
+
+# ── Builder: toolchain (uv/pip) and dependency install live here only ──
+FROM python:3.12-slim@${PYTHON_BASE_DIGEST} AS builder
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock ./
+
+RUN set -eux; \
+    pip install --no-cache-dir uv; \
+    uv export --quiet --frozen --no-dev --no-emit-project --no-header -o requirements.txt; \
+    python -m venv /opt/venv; \
+    /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
+
+# ── Final: runtime only, no toolchain, runs as non-root ──
+FROM python:3.12-slim@${PYTHON_BASE_DIGEST} AS final
+
+ENV PYTHONPATH=/app/src \
+    PATH="/opt/venv/bin:$PATH" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+COPY --from=builder /opt/venv /opt/venv
+
+COPY src ./src
+COPY scripts/azure/container-start.sh ./
+
+RUN groupadd -r app && useradd -r -g app app \
+    && mkdir -p /mwa/state /mwa/tls \
+    && chown -R app:app /app /mwa \
+    && chmod +x ./container-start.sh
+
+USER app
+
+EXPOSE 8443
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD python -c "import socket; socket.create_connection(('127.0.0.1', 8443), timeout=5).close()"
+
+CMD ["./container-start.sh"]

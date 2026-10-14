@@ -1,6 +1,11 @@
 name: deploy-lab
-# Replica del lab AD su Azure (VNet isolata): DC + VM app con connettore.
+# Replica del lab AD su Azure: DC su VM + connettore come Web App Linux
+# container sul piano esistente asp-helpdesk-prd-neu (nessun piano aggiuntivo).
 # Solo manuale (workflow_dispatch): nessun deploy automatico su push.
+#
+# Prerequisiti una tantum (owner):
+# - Environment GitHub `lab` con i secret sotto elencati
+# - Admin user abilitato su crhelpdeskprd -> secret ACR_USERNAME/ACR_PASSWORD
 on:
   workflow_dispatch: {}
 permissions:
@@ -8,12 +13,17 @@ permissions:
   contents: read
 env:
   AZ_RG: rg-adlab
-  AZ_REGION: italynorth
+  AZ_REGION: northeurope
   VNET: adlab-vnet
   DC_VM: vm-dc01
-  APP_VM: vm-app01
   DC_IP: 10.20.1.4
-  APP_IP: 10.20.2.4
+  WEBAPP_RG: rg-adlab
+  PLAN_ID: /subscriptions/0d6ce570-7813-445e-bb22-e35faf195918/resourceGroups/rg-aiw-agents-neu-001/providers/Microsoft.Web/serverfarms/asp-helpdesk-prd-neu
+  WEBAPP: app-mwa-adconn-neu-001
+  ACR_LOGIN: crhelpdeskprd.azurecr.io
+  IMAGE: crhelpdeskprd.azurecr.io/mwa-ad-connector
+  ST: stmadlabneu001
+  SHARE: mwa-state
   RAW_BASE: https://raw.githubusercontent.com/DarioTortorici/activeconnector/main/scripts/azure
   REPO_SCRIPTS_RAW: https://raw.githubusercontent.com/DarioTortorici/activeconnector/main/scripts
 jobs:
@@ -27,23 +37,24 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: RG, VNet, NSG, Bastion
+      - name: RG, VNet, NSG, Storage
         shell: bash
         run: |
           set -euo pipefail
           az group create -n "$AZ_RG" -l "$AZ_REGION"
           az network vnet create -g "$AZ_RG" -n "$VNET" --address-prefix 10.20.0.0/16 \
             --subnet-name snet-dc --subnet-prefix 10.20.1.0/24 --dns-servers "$DC_IP" || true
-          az network vnet subnet create -g "$AZ_RG" --vnet-name "$VNET" -n snet-app \
-            --address-prefix 10.20.2.0/24 || true
+          az network vnet subnet create -g "$AZ_RG" --vnet-name "$VNET" -n snet-webapp \
+            --address-prefix 10.20.4.0/26 \
+            --delegations Microsoft.Web/serverFarms || true
           az network nsg create -g "$AZ_RG" -n nsg-adlab || true
           az network vnet subnet update -g "$AZ_RG" --vnet-name "$VNET" -n snet-dc \
             --network-security-group nsg-adlab
-          az network vnet subnet update -g "$AZ_RG" --vnet-name "$VNET" -n snet-app \
-            --network-security-group nsg-adlab
-          # Nota: niente Bastion/IP pubblici (scelta costo): niente RDP interattivo.
-          # Tutta l'interazione passa dal control plane Azure (run-command/extension).
-      - name: Create VMs (skip if present)
+          az storage account create -g "$AZ_RG" -n "$ST" -l "$AZ_REGION" \
+            --sku Standard_LRS --kind StorageV2 --allow-blob-public-access false || true
+          STKEY=$(az storage account keys list -g "$AZ_RG" -n "$ST" --query "[0].value" -o tsv)
+          az storage share create --account-name "$ST" --account-key "$STKEY" -n "$SHARE" || true
+      - name: Create DC VM (skip if present)
         shell: bash
         env:
           LABADMIN_PASSWORD: ${{ secrets.LABADMIN_PASSWORD }}
@@ -56,14 +67,6 @@ jobs:
               --admin-username labadmin --admin-password "$LABADMIN_PASSWORD"
           else
             echo "DC VM exists, skipping create"
-          fi
-          if ! az vm show -g "$AZ_RG" -n "$APP_VM" >/dev/null 2>&1; then
-            az vm create -g "$AZ_RG" -n "$APP_VM" --image Win2022Datacenter \
-              --size Standard_B2s --vnet-name "$VNET" --subnet snet-app \
-              --private-ip-address "$APP_IP" --public-ip-address "" \
-              --admin-username labadmin --admin-password "$LABADMIN_PASSWORD"
-          else
-            echo "App VM exists, skipping create"
           fi
   dc:
     needs: infra
@@ -119,8 +122,25 @@ jobs:
         with:
           name: dc-ca-pem
           path: dc-ca.pem
-  app:
+  image:
     needs: dc
+    runs-on: ubuntu-latest
+    environment: lab
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and push connector image
+        env:
+          ACR_USER: ${{ secrets.ACR_USERNAME }}
+          ACR_PASS: ${{ secrets.ACR_PASSWORD }}
+        run: |
+          set -euo pipefail
+          echo "$ACR_PASS" | docker login "$ACR_LOGIN" -u "$ACR_USER" --password-stdin
+          TAG=${GITHUB_SHA:0:7}
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          docker build -f packaging/container/Dockerfile.linux -t "$IMAGE:$TAG" .
+          docker push "$IMAGE:$TAG"
+  webapp:
+    needs: image
     runs-on: ubuntu-latest
     environment: lab
     steps:
@@ -133,20 +153,102 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: dc-ca-pem
-      - name: Configure app VM (prereqs, repo, env, connector service)
+      - name: Create or update Web App on the existing plan
+        env:
+          ACR_USER: ${{ secrets.ACR_USERNAME }}
+          ACR_PASS: ${{ secrets.ACR_PASSWORD }}
+        run: |
+          set -euo pipefail
+          TAG=${GITHUB_SHA:0:7}
+          if ! az webapp show -g "$WEBAPP_RG" -n "$WEBAPP" >/dev/null 2>&1; then
+            az webapp create -g "$WEBAPP_RG" -p "$PLAN_ID" -n "$WEBAPP" \
+              --deployment-container-image-name "$IMAGE:$TAG" \
+              --docker-registry-server-user "$ACR_USER" \
+              --docker-registry-server-password "$ACR_PASS"
+          else
+            az webapp config container set -g "$WEBAPP_RG" -n "$WEBAPP" \
+              --docker-custom-image-name "$IMAGE:$TAG" \
+              --docker-registry-server-url "https://$ACR_LOGIN" \
+              --docker-registry-server-user "$ACR_USER" \
+              --docker-registry-server-password "$ACR_PASS"
+          fi
+      - name: App settings (config + secrets + CA PEM)
         env:
           P_BIND: ${{ secrets.SVC_MWA_PASSWORD }}
           P_JWT: ${{ secrets.MWA_JWT_SECRET }}
           P_PAGE: ${{ secrets.MWA_PAGE_TOKEN_SECRET }}
+          ACR_USER: ${{ secrets.ACR_USERNAME }}
+          ACR_PASS: ${{ secrets.ACR_PASSWORD }}
         run: |
-          CAB64=$(base64 -w0 dc-ca.pem)
-          CA_B64="$CAB64" python -c "import json,os; json.dump({'commandToExecute': 'powershell -ExecutionPolicy Bypass -File .\\\\configure-app.ps1 -BindPassword \\'' + os.environ['P_BIND'] + '\\' -JwtSecret \\'' + os.environ['P_JWT'] + '\\' -PageTokenSecret \\'' + os.environ['P_PAGE'] + '\\' -CaPemB64 \\'' + os.environ['CA_B64'] + '\\''}, open('ps3.json','w'))"
-          az vm extension set -g "$AZ_RG" --vm-name "$APP_VM" \
-            -n CustomScriptExtension --publisher Microsoft.Compute --version 1.10 \
-            --settings "{\"fileUris\":[\"$RAW_BASE/configure-app.ps1\"]}" \
-            --protected-settings @ps3.json
+          python - <<'EOF'
+          import json, os
+          pem = open('dc-ca.pem', encoding='utf-8').read()
+          base = {
+              'WEBSITES_PORT': '8443',
+              'DOCKER_REGISTRY_SERVER_URL': 'https://crhelpdeskprd.azurecr.io',
+              'MWA_AD_CUSTOMER_ID': 'customer-lab',
+              'MWA_AD_TENANT_ID': 'tenant-lab',
+              'MWA_AD_CONNECTOR_ID': 'connector-corp-01',
+              'MWA_AD_FOREST_ID': 'forest-corp',
+              'MWA_AD_DOMAIN_ID': 'domain-corp',
+              'MWA_AD_BASE_DN': 'DC=corp,DC=test,DC=local',
+              'MWA_AD_MANAGED_OUS': '["OU=Managed,DC=corp,DC=test,DC=local","OU=Utenti-Test,DC=corp,DC=test,DC=local"]',
+              'MWA_AD_DC_HOST': 'DC01.corp.test.local',
+              'MWA_AD_DC_PORT': '636',
+              'MWA_AD_USE_LDAPS': 'true',
+              'MWA_AD_LDAPS_REQUIRE_CERT': 'true',
+              'MWA_AD_TRUST_STORE_PATH': '/mwa/tls/domain-ca.pem',
+              'MWA_AD_AUTH_MODE': 'simple',
+              'MWA_AD_BIND_USER': 'svc-mwa@corp.test.local',
+              'MWA_AD_SOURCE_ANCHOR_STRATEGY': 'objectGuid',
+              'MWA_AD_ENABLE_MUTATIONS': 'true',
+              'MWA_AD_ENABLE_PASSWORD_RESET': 'false',
+              'MWA_AD_VALIDATION_MODE_ONLY': 'false',
+              'MWA_AD_STATE_DIR': '/mwa/state',
+              'MWA_AD_LOG_LEVEL': 'INFO',
+              'MWA_AD_REQUEST_MAX_BYTES': '1048576',
+              'MWA_AD_CLOCK_SKEW_SECONDS': '60',
+              'MWA_AD_NONCE_TTL_SECONDS': '300',
+              'MWA_AD_JWT_ISSUER': 'mwa-trusted-agent',
+              'MWA_AD_JWT_AUDIENCE': 'mwa-ad-connector',
+              'MWA_AD_API_HOST': '0.0.0.0',
+              'MWA_AD_API_PORT': '8443',
+              'MWA_AD_RATE_LIMIT_CAPACITY': '100',
+              'MWA_AD_RATE_LIMIT_PER_SECOND': '10.0',
+              'MWA_AD_LDAP_CONNECT_TIMEOUT_SECONDS': '10.0',
+              'MWA_AD_LDAP_OPERATION_TIMEOUT_SECONDS': '30.0',
+              'MWA_AD_LDAP_POOL_SIZE': '10',
+          }
+          secrets = {
+              'MWA_AD_BIND_PASSWORD': os.environ['P_BIND'],
+              'MWA_AD_JWT_SECRET': os.environ['P_JWT'],
+              'MWA_AD_PAGE_TOKEN_SECRET': os.environ['P_PAGE'],
+              'DOCKER_REGISTRY_SERVER_USERNAME': os.environ['ACR_USER'],
+              'DOCKER_REGISTRY_SERVER_PASSWORD': os.environ['ACR_PASS'],
+              'MWA_AD_TRUST_STORE_PEM': pem,
+          }
+          settings = [{'name': k, 'value': v} for k, v in {**base, **secrets}.items()]
+          json.dump(settings, open('settings.json', 'w'))
+          print(f'{len(settings)} app settings prepared')
+          EOF
+          az webapp config appsettings set -g "$WEBAPP_RG" -n "$WEBAPP" --settings @settings.json
+      - name: Persistent state mount, VNet integration, health check
+        shell: bash
+        run: |
+          set -euo pipefail
+          STKEY=$(az storage account keys list -g "$AZ_RG" -n "$ST" --query "[0].value" -o tsv)
+          az webapp config storage-account add -g "$WEBAPP_RG" -n "$WEBAPP" \
+            --custom-id mwadstate --storage-type AzureFiles \
+            --account-name "$ST" --share-name "$SHARE" --mount-path /mwa/state \
+            --access-key "$STKEY" || true
+          az webapp vnet-integration add -g "$WEBAPP_RG" -n "$WEBAPP" \
+            --vnet "$VNET" --subnet snet-webapp || true
+          az webapp update -g "$WEBAPP_RG" -n "$WEBAPP" \
+            --set siteConfig.alwaysOn=true siteConfig.healthCheckPath=/api/v1/health
+          az webapp restart -g "$WEBAPP_RG" -n "$WEBAPP"
+          echo "URL: https://$WEBAPP.azurewebsites.net/api/v1/health"
   verify:
-    needs: app
+    needs: webapp
     runs-on: ubuntu-latest
     environment: lab
     steps:
@@ -156,12 +258,15 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Verify (health, LDAPS, resolve, dry-run)
-        env:
-          P_JWT: ${{ secrets.MWA_JWT_SECRET }}
+      - name: DC LDAPS reachable (control plane)
+        shell: bash
         run: |
-          python -c "import json,os; json.dump({'commandToExecute': 'powershell -ExecutionPolicy Bypass -File .\\\\verify-lab.ps1 -JwtSecret \\'' + os.environ['P_JWT'] + '\\''}, open('ps4.json','w'))"
-          az vm extension set -g "$AZ_RG" --vm-name "$APP_VM" \
-            -n CustomScriptExtension --publisher Microsoft.Compute --version 1.10 \
-            --settings "{\"fileUris\":[\"$RAW_BASE/verify-lab.ps1\"]}" \
-            --protected-settings @ps4.json
+          az vm run-command invoke -g "$AZ_RG" -n "$DC_VM" \
+            --command-id RunPowerShellScript \
+            --scripts "Test-NetConnection DC01.corp.test.local -Port 636 | Select-Object TcpTestSucceeded" \
+            --query "value[0].message" -o tsv
+      - name: Connector health, resolve, dry-run over public URL
+        env:
+          MWA_BASE_URL: https://app-mwa-adconn-neu-001.azurewebsites.net/api/v1
+          MWA_JWT_SECRET: ${{ secrets.MWA_JWT_SECRET }}
+        run: python scripts/azure/verify-cloud.py
