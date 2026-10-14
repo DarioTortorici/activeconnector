@@ -42,7 +42,10 @@ Azure  rg-aiw-agents-neu-001  (North Europe)
 
 **Permessi dell'App OIDC** (nel tenant delle risorse): `Contributor` su
 `rg-aiw-agents-neu-001`, `AcrPush` e `User Access Administrator` su
-`crhelpdeskprd`. Nessun secret ACR (pull via managed identity).
+`crhelpdeskprd`. `AcrPush` serve per pubblicare l'immagine; `User Access
+Administrator` e' **obbligatorio** perche' il deploy concede `AcrPull`
+all'identita' della web app (senza, il container non scarica l'immagine:
+`ACRTokenRetrievalFailure`). Nessun secret ACR (pull via managed identity).
 
 ## Deploy
 
@@ -113,6 +116,11 @@ az webapp log tail -g rg-aiw-agents-neu-001 -n app-mwa-adconn-neu-001
 6. **`X-Ticket-ID`**: il connettore lo pretende su ogni mutazione; l'agent deve
    inviarlo (i tool parity EntraMCP non hanno il concetto di ticket: viene
    sintetizzato).
+7. **Pull immagine ACR**: la web app scarica l'immagine con la propria managed
+   identity, quindi serve `AcrPull` su `crhelpdeskprd`; il deploy lo concede, ma
+   richiede che l'App di deploy abbia `User Access Administrator` sull'ACR.
+   Senza: `ACRTokenRetrievalFailure` (Unauthorized) nei log container e health
+   503/timeout. Il job `webapp` ora verifica il grant e fallisce esplicitamente.
 
 ## Modifiche al codice necessarie (gia' presenti)
 

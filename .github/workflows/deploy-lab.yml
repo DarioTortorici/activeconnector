@@ -216,6 +216,12 @@ jobs:
           ACR_ID=$(az acr show -g "$AZ_RG" -n "$ACR_NAME" --query id -o tsv 2>/dev/null || az acr show --name "$ACR_NAME" --query id -o tsv)
           az role assignment create --assignee-object-id "$PID" --assignee-principal-type ServicePrincipal \
             --role AcrPull --scope "$ACR_ID" || true
+          COUNT=$(az role assignment list --scope "$ACR_ID" --assignee "$PID" --query "length(@)" -o tsv)
+          if [ "$COUNT" = "0" ]; then
+            echo "ERROR: AcrPull missing on the ACR for the web app identity."
+            echo "The deploy identity needs 'User Access Administrator' on crhelpdeskprd (one-time)."
+            exit 1
+          fi
           az webapp config set -g "$AZ_RG" -n "$WEBAPP" --always-on true
           az webapp config set -g "$AZ_RG" -n "$WEBAPP" \
             --generic-configurations '{"acrUseManagedIdentityCreds": true, "healthCheckPath": "/api/v1/health"}'
