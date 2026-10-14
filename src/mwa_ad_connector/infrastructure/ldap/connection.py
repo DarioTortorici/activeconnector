@@ -59,8 +59,9 @@ class LdapConnectionConfig:
 class LdapConnectionManager:
     """Manage LDAPS connections with DC pinning and bounded concurrency.
 
-    All blocking ldap3 calls run via :func:`asyncio.to_thread`.
-    Kerberos/gMSA without a static secret is documented, not silently used.
+    All blocking ldap3 calls run via :func:`asyncio.to_thread`. Only simple bind
+    over LDAPS with a static secret is supported; the secret is rotated
+    out-of-band (vault / service environment).
     """
 
     config: LdapConnectionConfig
@@ -96,13 +97,14 @@ class LdapConnectionManager:
             RuntimeError: If TLS is not enforced, Kerberos is requested,
                 or the bind fails.
         """
-        from ldap3 import NTLM, Connection, Server  # noqa: PLC0415
+        from ldap3 import Connection, Server  # noqa: PLC0415
 
-        _ = NTLM  # reference to document auth modes; simple bind under TLS is MVP.
         if not self.config.use_ssl:
             raise RuntimeError("plaintext LDAP refused")
         if not self.config.bind_password:
-            raise RuntimeError("Kerberos/gMSA without static secret is not configured in this build")
+            raise RuntimeError(
+                "simple bind requires bind_password; configure the service secret (rotate via vault)"
+            )
         server = Server(
             host,
             port=self.config.port,
