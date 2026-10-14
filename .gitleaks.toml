@@ -1,0 +1,12 @@
+# gitleaks configuration.
+#
+# Keep the default rules (useDefault = true) and add a single allowlist entry:
+# unit/contract test fixtures use placeholder identifiers such as
+# `"idempotency_key": "idem-12345678"` which the default `generic-api-key` rule
+# matches as a false positive (the value is a test id, not a secret).
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Test fixtures use placeholder ids, not real secrets"
+paths = ['''tests/.*\.py''']
