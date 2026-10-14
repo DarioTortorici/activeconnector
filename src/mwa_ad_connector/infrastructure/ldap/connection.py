@@ -117,7 +117,9 @@ class LdapConnectionManager:
                 user=self.config.bind_user,
                 password=secret,
                 auto_bind=True,
-                receive_timeout=self.config.operation_timeout,
+                # ldap3 packs SO_RCVTIMEO as struct 'LL' on non-Windows, which
+                # requires an int; a float (e.g. 30.0) raises struct.error.
+                receive_timeout=int(self.config.operation_timeout),
             )
         finally:
             del secret
