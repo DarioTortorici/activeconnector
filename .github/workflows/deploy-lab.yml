@@ -40,18 +40,28 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: VNet, NSG, Storage
+      - name: VNet, NSG, bootstrap NAT, Storage
         shell: bash
         run: |
           set -euo pipefail
+          # No custom DNS yet: during bootstrap the VM must resolve public names to
+          # download the extension payloads. DNS is pointed at the DC at the end of
+          # the dc job, once the DC actually serves DNS.
           az network vnet create -g "$AZ_RG" -n "$VNET" --address-prefix 10.20.0.0/16 \
-            --subnet-name snet-dc --subnet-prefix 10.20.1.0/24 --dns-servers "$DC_IP" || true
+            --subnet-name snet-dc --subnet-prefix 10.20.1.0/24 || true
           az network vnet subnet create -g "$AZ_RG" --vnet-name "$VNET" -n snet-webapp \
             --address-prefix 10.20.4.0/26 \
             --delegations Microsoft.Web/serverFarms || true
           az network nsg create -g "$AZ_RG" -n nsg-adlab || true
           az network vnet subnet update -g "$AZ_RG" --vnet-name "$VNET" -n snet-dc \
             --network-security-group nsg-adlab
+          # NAT (egress) is only needed for the one-time bootstrap; it is removed at
+          # the end of the dc job so it stops costing while the lab is idle.
+          az network public-ip create -g "$AZ_RG" -n pip-adlab-nat --sku Standard || true
+          az network nat gateway create -g "$AZ_RG" -n nat-adlab \
+            --public-ip-addresses pip-adlab-nat --idle-timeout 10 || true
+          az network vnet subnet update -g "$AZ_RG" --vnet-name "$VNET" -n snet-dc \
+            --nat-gateway nat-adlab
           az storage account create -g "$AZ_RG" -n "$ST" -l "$AZ_REGION" \
             --sku Standard_LRS --kind StorageV2 --allow-blob-public-access false || true
           STKEY=$(az storage account keys list -g "$AZ_RG" -n "$ST" --query "[0].value" -o tsv)
@@ -145,6 +155,16 @@ jobs:
         with:
           name: dc-ca-pem
           path: dc-ca.pem
+      - name: Point DNS at the DC, drop bootstrap NAT
+        shell: bash
+        run: |
+          set -euo pipefail
+          az network vnet update -g "$AZ_RG" -n "$VNET" --dns-servers "$DC_IP"
+          az network nic update -g "$AZ_RG" -n vm-dc01VMNic --set "dnsSettings.dnsServers=[]" || true
+          az network vnet subnet update -g "$AZ_RG" --vnet-name "$VNET" -n snet-dc --remove natGateway || true
+          az network nat gateway delete -g "$AZ_RG" -n nat-adlab --yes || true
+          az network public-ip delete -g "$AZ_RG" -n pip-adlab-nat || true
+          echo "DNS -> $DC_IP; bootstrap NAT removed"
   image:
     needs: dc
     runs-on: ubuntu-latest

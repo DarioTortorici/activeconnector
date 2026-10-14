@@ -1,0 +1,30 @@
+name: lab-stop
+# Spegne (deallocate) la VM del Domain Controller: azzera il costo di compute
+# mentre il lab non serve. Dischi e storage restano (pochi centesimi/giorno).
+# Il NAT di bootstrap e il suo public IP sono già rimossi a fine deploy.
+on:
+  workflow_dispatch: {}
+permissions:
+  id-token: write
+  contents: read
+env:
+  AZ_RG: rg-aiw-agents-neu-001
+  DC_VM: vm-dc01
+jobs:
+  stop:
+    runs-on: ubuntu-latest
+    environment: lab
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Deallocate DC VM
+        shell: bash
+        run: |
+          set -euo pipefail
+          az vm deallocate -g "$AZ_RG" -n "$DC_VM"
+          az vm show -g "$AZ_RG" -n "$DC_VM" -d \
+            --query "{power:powerState, privateIp:privateIps}" -o json
+          echo "DC arrestrato (deallocated): costo compute azzerato"

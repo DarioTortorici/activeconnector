@@ -1,0 +1,35 @@
+name: lab-start
+# Riaccende la VM del Domain Controller per le demo. L'IP privato statico
+# (10.20.1.4) e' invariato, quindi il connettore la ritrova subito.
+on:
+  workflow_dispatch: {}
+permissions:
+  id-token: write
+  contents: read
+env:
+  AZ_RG: rg-aiw-agents-neu-001
+  DC_VM: vm-dc01
+jobs:
+  start:
+    runs-on: ubuntu-latest
+    environment: lab
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Start DC VM and wait for LDAPS
+        shell: bash
+        run: |
+          set -euo pipefail
+          az vm start -g "$AZ_RG" -n "$DC_VM"
+          for i in $(seq 1 30); do
+            OUT=$(az vm run-command invoke -g "$AZ_RG" -n "$DC_VM" \
+              --command-id RunPowerShellScript \
+              --scripts "Test-NetConnection localhost -Port 636 | Select-Object -ExpandProperty TcpTestSucceeded" \
+              --query "value[0].message" -o tsv 2>/dev/null || true)
+            if echo "$OUT" | grep -qi "True"; then echo "DC LDAPS ready"; exit 0; fi
+            echo "waiting for DC ($i/30)"; sleep 30
+          done
+          echo "ERROR: DC did not become ready"; exit 1
