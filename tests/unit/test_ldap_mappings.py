@@ -124,4 +124,3 @@ def test_map_user_surfaces_givenname_and_sn() -> None:
     user = _map(_real_entry(givenName=["Mario"], sn=["Rossi"]))
     assert user.attributes.get("givenName") == ["Mario"]
     assert user.attributes.get("sn") == ["Rossi"]
-

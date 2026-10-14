@@ -102,9 +102,7 @@ class LdapConnectionManager:
         if not self.config.use_ssl:
             raise RuntimeError("plaintext LDAP refused")
         if not self.config.bind_password:
-            raise RuntimeError(
-                "simple bind requires bind_password; configure the service secret (rotate via vault)"
-            )
+            raise RuntimeError("simple bind requires bind_password; configure the service secret (rotate via vault)")
         server = Server(
             host,
             port=self.config.port,

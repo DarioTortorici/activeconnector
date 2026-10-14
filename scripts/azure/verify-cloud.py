@@ -18,6 +18,7 @@ BASE = os.environ["MWA_BASE_URL"].rstrip("/")
 SECRET = os.environ["MWA_JWT_SECRET"]
 TENANT = os.environ.get("MWA_TENANT_ID", "tenant-lab")
 CONNECTOR = os.environ.get("MWA_CONNECTOR_ID", "connector-corp-01")
+HTTP_OK = 200
 
 
 def _b64url(raw: bytes) -> str:
@@ -59,12 +60,14 @@ def call(path: str, body: dict | None, extra: dict | None = None) -> tuple[int, 
     }
     headers.update(extra or {})
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(
-        f"{BASE}{path}", data=data, headers=headers,
+    req = urllib.request.Request(  # noqa: S310
+        f"{BASE}{path}",
+        data=data,
+        headers=headers,
         method="POST" if data is not None else "GET",
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
             return resp.status, json.loads(resp.read().decode() or "{}")
     except urllib.error.HTTPError as exc:
         try:
@@ -76,22 +79,28 @@ def call(path: str, body: dict | None, extra: dict | None = None) -> tuple[int, 
 def main() -> int:
     status, health = call("/api/v1/health", None)
     print("health:", status, health.get("status"))
-    if status != 200 or health.get("status") != "HEALTHY":
+    if status != HTTP_OK or health.get("status") != "HEALTHY":
         return 1
     status, resolved = call(
         "/api/v1/users:resolve",
-        {"object_type": "USER", "domain_id": "domain-corp",
-         "identifier_type": "SAM_ACCOUNT_NAME", "identifier_value": "tuser1"},
+        {
+            "object_type": "USER",
+            "domain_id": "domain-corp",
+            "identifier_type": "SAM_ACCOUNT_NAME",
+            "identifier_value": "tuser1",
+        },
     )
     guid = resolved.get("object_guid")
     print("resolve:", status, guid)
-    if status != 200 or not guid:
+    if status != HTTP_OK or not guid:
         return 1
     status, dry = call(
         f"/api/v1/users/{guid}:update-attributes",
         {"attributes": {"givenName": "Mario", "sn": "Rossi"}, "dry_run": True},
-        {"Idempotency-Key": hashlib.sha256(os.urandom(16)).hexdigest(),
-         "X-Ticket-ID": "verify-" + hashlib.sha256(os.urandom(8)).hexdigest()[:8]},
+        {
+            "Idempotency-Key": hashlib.sha256(os.urandom(16)).hexdigest(),
+            "X-Ticket-ID": "verify-" + hashlib.sha256(os.urandom(8)).hexdigest()[:8],
+        },
     )
     print("dry-run:", status, dry.get("state"), dry.get("disposition"))
     return 0 if status in (200, 202) else 1

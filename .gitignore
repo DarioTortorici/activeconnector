@@ -62,3 +62,6 @@ Thumbs.db
 *.key
 *.pfx
 config.local.*
+
+# Superpowers SDD scratch (ledger, briefs, reports)
+.superpowers/
