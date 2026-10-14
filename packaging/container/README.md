@@ -1,8 +1,9 @@
 # Container packaging (Step 18, conditional)
 
 The container image is **conditional**: adopt it only after validating that
-gMSA/Kerberos/LDAPS work from the target orchestrator without weakening
-authentication. Otherwise use `packaging/windows-service`.
+LDAPS works from the target orchestrator without weakening authentication.
+gMSA/Kerberos are not supported in this build (they fail fast at startup).
+Otherwise use `packaging/windows-service`.
 
 ## Build
 
