@@ -26,7 +26,9 @@ def _base_env(tmp_path: Path) -> dict[str, str]:
         "MWA_AD_MANAGED_OUS": '["OU=Users,DC=lab,DC=local"]',
         "MWA_AD_DC_HOST": "dc01.lab.local",
         "MWA_AD_TRUST_STORE_PATH": str(trust),
-        "MWA_AD_AUTH_MODE": "gmsa",
+        "MWA_AD_AUTH_MODE": "simple",
+        "MWA_AD_BIND_USER": "svc-mwa@lab.local",
+        "MWA_AD_BIND_PASSWORD": "test-only-bind-secret",
         "MWA_AD_JWT_SECRET": "test-only-jwt-secret",
         "MWA_AD_PAGE_TOKEN_SECRET": "test-only-page-secret",
     }
@@ -88,3 +90,27 @@ def test_connector_profile_domain_lookup() -> None:
     assert profile.domain_ids() == ["domain-lab"]
     assert profile.find_domain("domain-lab") == domain
     assert profile.find_domain("unknown") is None
+
+
+def test_default_auth_mode_is_simple() -> None:
+    """The default bind mechanism is simple over LDAPS."""
+    assert ConnectorSettings.model_fields["auth_mode"].default == "simple"
+
+
+def test_unsupported_auth_modes_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """gmsa/kerberos are not implemented and fail fast at settings load."""
+    for mode in ("gmsa", "kerberos"):
+        for key, value in _base_env(tmp_path).items():
+            monkeypatch.setenv(key, value)
+        monkeypatch.setenv("MWA_AD_AUTH_MODE", mode)
+        with pytest.raises(ValidationError):
+            ConnectorSettings()
+
+
+def test_simple_requires_bind_password(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Simple bind without a secret is rejected."""
+    for key, value in _base_env(tmp_path).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("MWA_AD_BIND_PASSWORD", raising=False)
+    with pytest.raises(ValidationError):
+        ConnectorSettings()

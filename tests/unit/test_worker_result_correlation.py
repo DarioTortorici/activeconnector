@@ -70,6 +70,9 @@ def _settings(**overrides: Any) -> ConnectorSettings:
         "managed_ous": ["OU=Users,DC=lab,DC=local"],
         "dc_host": "dc-lab.local",
         "ldaps_require_cert": False,
+        "auth_mode": "simple",
+        "bind_user": "svc-mwa@lab.local",
+        "bind_password": "test-only-bind-secret",
         "jwt_secret": "unit-test-jwt-secret",  # noqa: S106 - test-only HMAC key.
         "page_token_secret": "unit-test-page-secret",  # noqa: S106 - test-only HMAC key.
     }

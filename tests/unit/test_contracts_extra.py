@@ -46,7 +46,9 @@ def test_validate_startup_rejects_duplicates(monkeypatch: pytest.MonkeyPatch, tm
         "MWA_AD_MANAGED_OUS": '["OU=A,DC=lab,DC=local", "ou=a,dc=lab,dc=local"]',
         "MWA_AD_DC_HOST": "dc01.lab.local",
         "MWA_AD_TRUST_STORE_PATH": str(trust),
-        "MWA_AD_AUTH_MODE": "gmsa",
+        "MWA_AD_AUTH_MODE": "simple",
+        "MWA_AD_BIND_USER": "svc-mwa@lab.local",
+        "MWA_AD_BIND_PASSWORD": "test-only-bind-secret",
         "MWA_AD_JWT_SECRET": "test-only-jwt-secret",
         "MWA_AD_PAGE_TOKEN_SECRET": "test-only-page-secret",
     }

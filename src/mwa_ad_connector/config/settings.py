@@ -35,9 +35,10 @@ class ConnectorSettings(BaseSettings):
         use_ldaps: Require LDAPS for all connections.
         ldaps_require_cert: Fail closed on untrusted/expired certificates.
         trust_store_path: PEM trust bundle path for LDAPS validation.
-        auth_mode: LDAP bind mechanism.
-        bind_user: Service account UPN/DN for simple bind (None for gMSA/Kerberos).
-        bind_password: Service account secret (never logged).
+        auth_mode: LDAP bind mechanism; only ``simple`` is supported in this
+            build (``kerberos``/``gmsa`` fail fast).
+        bind_user: Service account UPN/DN for simple bind.
+        bind_password: Service account secret (never logged; rotate via vault).
         source_anchor_strategy: Explicit Entra source-anchor strategy per profile.
         enable_mutations: Master kill-switch for all write capabilities.
         enable_password_reset: Separate kill-switch for password reset.
@@ -79,7 +80,7 @@ class ConnectorSettings(BaseSettings):
     use_ldaps: bool = True
     ldaps_require_cert: bool = True
     trust_store_path: str | None = Field(default=None, max_length=1024)
-    auth_mode: AuthMode = "gmsa"
+    auth_mode: AuthMode = "simple"
     bind_user: str | None = Field(default=None, max_length=256)
     bind_password: SecretStr | None = None
     source_anchor_strategy: SourceAnchorStrategy = "objectGuid"
@@ -154,12 +155,16 @@ class ConnectorSettings(BaseSettings):
             raise ValueError("LDAPS requires port 636 (or 3269 for GC SSL)")
         if not self.use_ldaps and self.enable_password_reset:
             raise ValueError("password reset requires LDAPS (use_ldaps=true)")
-        if self.auth_mode == "simple" and not self.bind_user:
-            raise ValueError("simple auth_mode requires bind_user")
-        if self.auth_mode in ("kerberos", "gmsa") and self.bind_password is not None:
-            raise ValueError(f"{self.auth_mode} auth_mode must not carry a static bind_password")
-        if self.auth_mode == "simple" and self.bind_password is None:
-            raise ValueError("simple auth_mode requires bind_password")
+        if self.auth_mode in ("kerberos", "gmsa"):
+            raise ValueError(
+                f"auth_mode={self.auth_mode} is not implemented in this build; "
+                "use auth_mode=simple with bind_user and bind_password "
+                "(rotate the secret via vault or the service environment)"
+            )
+        if not self.bind_user:
+            raise ValueError("auth_mode=simple requires bind_user")
+        if self.bind_password is None:
+            raise ValueError("auth_mode=simple requires bind_password")
         if self.servicebus_enabled and self.servicebus_connection_string is None:
             raise ValueError("servicebus_enabled requires servicebus_connection_string")
         return self

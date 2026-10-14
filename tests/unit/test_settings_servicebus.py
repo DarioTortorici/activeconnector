@@ -23,7 +23,9 @@ def _settings(**overrides: Any) -> ConnectorSettings:
         "base_dn": "DC=lab,DC=local",
         "managed_ous": ["OU=Users,DC=lab,DC=local"],
         "dc_host": "dc01.lab.local",
-        "auth_mode": "gmsa",
+        "auth_mode": "simple",
+        "bind_user": "svc-mwa@lab.local",
+        "bind_password": "test-only-bind-secret",
         "jwt_secret": "test-only-jwt-secret",
         "page_token_secret": "test-only-page-secret",
     }
