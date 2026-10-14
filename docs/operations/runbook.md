@@ -7,6 +7,14 @@ Start-Service MWAADConnector   # API + worker under WinSW supervision
 Stop-Service MWAADConnector    # graceful: in-flight message completes first
 ```
 
+## Transport security
+
+Loopback HTTP (`127.0.0.1:8443`) is fine for a single host. If the API is exposed
+to another host, set `MWA_AD_TLS_ENABLED=true` with `MWA_AD_TLS_CERTFILE`/
+`MWA_AD_TLS_KEYFILE`, or front it with a supported reverse proxy that terminates
+TLS. Enable `MWA_AD_TLS_REQUIRE_CLIENT_CERT=true` with `MWA_AD_TLS_CA_CERTS` for
+mTLS. Incomplete TLS config refuses to start.
+
 ## Daily checks
 
 1. `GET /api/v1/health` → `HEALTHY` (anonymous).

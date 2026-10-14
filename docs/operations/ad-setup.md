@@ -38,7 +38,7 @@ obbligatorio o è incoerente, il processo non parte.
 | `MWA_AD_USE_LDAPS` | no | Deve restare `true`: LDAP in chiaro è rifiutato | `true` |
 | `MWA_AD_LDAPS_REQUIRE_CERT` | no | Validazione certificato fail-closed | `true` |
 | `MWA_AD_TRUST_STORE_PATH` | sì con validazione | PEM della CA | `C:\ProgramData\MWA\tls\lab-ca.pem` |
-| `MWA_AD_AUTH_MODE` | no | `simple`, `kerberos`, `gmsa` (default `gmsa`) | `simple` |
+| `MWA_AD_AUTH_MODE` | no | Solo `simple` in questa build (`kerberos`/`gmsa` non implementati, fail-fast) | `simple` |
 | `MWA_AD_BIND_USER` | con `simple` | UPN/DN dell'account di servizio | `svc-mwa@lab.example.test` |
 | `MWA_AD_BIND_PASSWORD` | con `simple` | Segreto dell'account (mai loggato) | `REPLACE-WITH-LAB-SECRET` |
 | `MWA_AD_SOURCE_ANCHOR_STRATEGY` | no | `objectGuid`, `msDsConsistencyGuid`, `objectSid`, `custom` | `objectGuid` |
@@ -56,6 +56,11 @@ obbligatorio o è incoerente, il processo non parte.
 | `MWA_AD_PAGE_TOKEN_SECRET` | sì | Chiave HMAC dei page token | `REPLACE-WITH-LAB-PAGE-TOKEN-SECRET` |
 | `MWA_AD_API_HOST` | no | Bind API (default `127.0.0.1`) | `127.0.0.1` |
 | `MWA_AD_API_PORT` | no | Porta API (default `8443`) | `8443` |
+| `MWA_AD_TLS_ENABLED` | no | Serve l'API in HTTPS (default `false`, HTTP su loopback) | `true` |
+| `MWA_AD_TLS_CERTFILE` | con TLS | PEM del certificato server | `C:\ProgramData\MWA\tls\server.crt` |
+| `MWA_AD_TLS_KEYFILE` | con TLS | PEM della chiave privata server | `C:\ProgramData\MWA\tls\server.key` |
+| `MWA_AD_TLS_CA_CERTS` | con mTLS | CA per validare il certificato client | `C:\ProgramData\MWA\tls\client-ca.pem` |
+| `MWA_AD_TLS_REQUIRE_CLIENT_CERT` | no | Richiede e valida il certificato client (mTLS) | `false` |
 | `MWA_AD_RATE_LIMIT_CAPACITY` | no | Capacità burst token bucket | `100` |
 | `MWA_AD_RATE_LIMIT_PER_SECOND` | no | Refill token bucket | `10.0` |
 | `MWA_AD_STATE_DIR` | no | Directory SQLite stato/audit (default `.mwa-state`) | `C:\ProgramData\MWA\state` |
