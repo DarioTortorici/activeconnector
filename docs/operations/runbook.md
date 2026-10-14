@@ -22,7 +22,8 @@ Incomplete TLS config refuses to start.
    `503 LDAP_UNAVAILABLE`.
 2. Verify the standby DC is reachable on LDAPS 636 and its certificate chains to
    `MWA_AD_TRUST_STORE_PATH`.
-3. Update `MWA_AD_DC_HOST` to the standby DC in the service environment.
+3. Update `MWA_AD_DC_HOST` to the standby DC in the WinSW `service.xml` service
+   environment consumed by `Start-Service`/`Stop-Service`.
 4. `Stop-Service MWAADConnector`, then `Start-Service MWAADConnector`.
 5. Confirm `/api/v1/readiness` reports `ldap_connectivity` healthy and run a
    resolve → unlock dry-run smoke.

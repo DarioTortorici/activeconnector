@@ -20,7 +20,9 @@ docker run --rm -p 8443:8443 `
 
 ## Pre-adoption checklist
 
-- [ ] gMSA credential spec (ccgmsa) delivers working Kerberos tickets in-container.
+- [ ] gMSA in-container is not supported in this build; only revisit if/when
+      gMSA lands (a ccgmsa credential spec must then deliver working Kerberos
+      tickets in-container).
 - [ ] LDAPS trust chain validates (fail-closed) from inside the container.
 - [ ] No secrets baked into layers (`docker history` shows none; config mounted).
 - [ ] `/api/v1/health` and `/api/v1/readiness` behave as on the host install.

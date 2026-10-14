@@ -14,7 +14,8 @@ Rules (fail-fast at startup):
 - `managed_ous` must sit under `base_dn`; targets outside are denied.
 - `use_ldaps: true` + `ldaps_require_cert: true` are mandatory for any
   password capability; cleartext LDAP never carries secrets.
-- `auth_mode: "gmsa"` preferred; `bind_password` stays empty unless the
-  traditional-account phase explicitly requires it (vault-sourced).
+- `auth_mode: "simple"` is the only supported mode this build; `bind_user` and a
+  vault-sourced `bind_password` are required. `kerberos`/`gmsa` fail fast at
+  startup.
 - `source_anchor_strategy` is per-customer config, never a hardcoded global.
 - No real secrets, hosts, DNs, or certificates in version control — ever.

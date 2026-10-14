@@ -103,7 +103,7 @@ def main() -> int:
         },
     )
     print("dry-run:", status, dry.get("state"), dry.get("disposition"))
-    return 0 if status in (200, 202) else 1
+    return 0 if status in (HTTP_OK, 202) else 1
 
 
 if __name__ == "__main__":

@@ -61,6 +61,11 @@ def test_mtls_requires_ca_bundle() -> None:
     assert settings.tls_require_client_cert is True
 
 
+def test_mtls_without_tls_enabled_rejected() -> None:
+    with pytest.raises(ValidationError):
+        _settings(tls_require_client_cert=True)
+
+
 def _run_entrypoint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **env: str) -> dict[str, Any]:
     trust = tmp_path / "ca.pem"
     trust.write_text("fake-pem", encoding="utf-8")

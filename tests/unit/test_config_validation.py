@@ -103,7 +103,7 @@ def test_unsupported_auth_modes_rejected(tmp_path: Path, monkeypatch: pytest.Mon
         for key, value in _base_env(tmp_path).items():
             monkeypatch.setenv(key, value)
         monkeypatch.setenv("MWA_AD_AUTH_MODE", mode)
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError, match="not implemented"):
             ConnectorSettings()
 
 
@@ -112,5 +112,14 @@ def test_simple_requires_bind_password(tmp_path: Path, monkeypatch: pytest.Monke
     for key, value in _base_env(tmp_path).items():
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("MWA_AD_BIND_PASSWORD", raising=False)
+    with pytest.raises(ValidationError):
+        ConnectorSettings()
+
+
+def test_simple_requires_bind_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Simple bind without a user is rejected."""
+    for key, value in _base_env(tmp_path).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("MWA_AD_BIND_USER", raising=False)
     with pytest.raises(ValidationError):
         ConnectorSettings()

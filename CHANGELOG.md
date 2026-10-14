@@ -21,6 +21,9 @@ versioning follows SemVer (RC → pilot → GA, see `RELEASE.md`).
   `CanonicalDispatcherAdapter` bridge.
 - Observability (`infrastructure/telemetry/`): redacted structlog JSON,
   SLA-neutral Prometheus metrics, optional OpenTelemetry tracing.
+- API transport security: optional API TLS/mTLS (`tls_enabled`, `tls_certfile`,
+  `tls_keyfile`, `tls_ca_certs`, `tls_require_client_cert`); loopback HTTP
+  remains the default.
 - Entrypoints: `mwa-api` (uvicorn) and `mwa-worker` (fail-closed without a
   wired dispatcher).
 - Packaging: Windows Service (`install.ps1`, `service.xml`), conditional
@@ -33,8 +36,15 @@ versioning follows SemVer (RC → pilot → GA, see `RELEASE.md`).
   real), lab placeholder matrix, fake e2e membership flow, security
   negatives (auth, binding, injection, limits, leakage).
 
+### Changed
+
+- `auth_mode` now defaults to `simple`; `kerberos` and `gmsa` are not
+  implemented in this build and fail fast at startup — configure `simple` with
+  `bind_user` + a vault-sourced `bind_password`.
+
 ### Fixed
 
+- Stale Kerberos/gMSA references removed from the LDAP connection path and docs.
 - Error handler no longer crashes on validation errors with empty locations
   (fail-closed 400 instead of 500).
 - Page-token decoder maps all malformed input to 400 (no codec leak to 500).

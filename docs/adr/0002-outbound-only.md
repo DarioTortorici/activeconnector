@@ -12,7 +12,7 @@ Il connettore opera in reti cliente che non possono aprire porte inbound. Il clo
 - [DECISIONE] Worker on-prem con polling/ricezione outbound da bus/relay; envelope validato localmente (versione, timestamp, nonce, tenant/customer/connector, capability, payload).
 - [DECISIONE] Trasporto concreto (Service Bus/relay) sostituibile dietro porta `command_transport`; semantica at-least-once con dedup via idempotency key, retry con backoff/jitter, dead-letter e poison-message handling (Step 16). Concreto: `ServiceBusRelay` (Azure Service Bus) è cablato nel worker quando
  `MWA_AD_SERVICEBUS_ENABLED=true`; `InMemoryRelay` resta il default lab/single-host.
-- [DA VALIDARE] Scelta del relay concreto (Step 16/20): envelope deve restare interoperabile.
+- [REQUISITO] L'envelope di comando deve restare interoperabile tra implementazioni del relay (Step 16/20).
 
 ## Conseguenze
 

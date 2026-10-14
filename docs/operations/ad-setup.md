@@ -112,8 +112,8 @@ $env:MWA_AD_STATE_DIR = "C:\ProgramData\MWA\state"
 Note operative:
 
 - In questa build l'unica modalità di bind cablata è `MWA_AD_AUTH_MODE=simple`
-  con `bind_user`/`bind_password` su LDAPS; Kerberos/gMSA sono documentati ma
-  non ancora attivi nell'adapter (il bind fallisce con errore esplicito).
+  con `bind_user`/`bind_password` su LDAPS; Kerberos/gMSA non sono implementati
+  e falliscono fail-fast al caricamento della configurazione.
 - `MWA_AD_VALIDATION_MODE_ONLY` è `true` di default: tutte le mutazioni sono
   forzate a dry-run. Per eseguire scritture reali impostarlo a `false` solo
   dopo aver verificato gli smoke test read-only.
