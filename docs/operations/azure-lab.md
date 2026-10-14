@@ -128,6 +128,15 @@ az webapp log tail -g rg-aiw-agents-neu-001 -n app-mwa-adconn-neu-001
    richiede che l'App di deploy abbia `User Access Administrator` sull'ACR.
    Senza: `ACRTokenRetrievalFailure` (Unauthorized) nei log container e health
    503/timeout. Il job `webapp` ora verifica il grant e fallisce esplicitamente.
+8. **Bind del connettore**: `svc-mwa` deve avere `userPrincipalName`
+   (il bind usa `svc-mwa@corp.test.local`) **e** una password conforme alla
+   policy AD (min 7 caratteri, complexity). Il bootstrap ora imposta l'UPN e
+   riallinea la password a ogni run; senza UPN il bind da' `invalidCredentials`.
+9. **ldap3 su Linux**: il connettore passa `receive_timeout` come **intero**
+   (`int(operation_timeout)`). Un float fa fallire il bind con
+   `struct.error: required argument is not an integer` (ldap3 impacchetta
+   `SO_RCVTIMEO` con `struct 'LL'`); su Windows prende un ramo diverso e il bug
+   non si vede.
 
 ## Modifiche al codice necessarie (gia' presenti)
 

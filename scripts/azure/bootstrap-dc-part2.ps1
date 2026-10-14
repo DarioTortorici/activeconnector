@@ -11,17 +11,21 @@ foreach ($ou in @('Managed', 'Utenti-Test', 'Gruppi-Test')) {
     catch { New-ADOrganizationalUnit -Name $ou -ProtectedFromAccidentalDeletion $false }
 }
 
+$upn = 'svc-mwa@corp.test.local'
 $svc = ConvertTo-SecureString $SvcPassword -AsPlainText -Force
-try { Get-ADUser 'svc-mwa' | Out-Null }
-catch {
-    New-ADUser 'svc-mwa' -Path "OU=Managed,$base" `
+if (Get-ADUser 'svc-mwa' -ErrorAction SilentlyContinue) {
+    Set-ADAccountPassword 'svc-mwa' -Reset -NewPassword $svc
+    Set-ADUser 'svc-mwa' -UserPrincipalName $upn -Enabled $true -PasswordNeverExpires $true
+}
+else {
+    New-ADUser 'svc-mwa' -Path "OU=Managed,$base" -UserPrincipalName $upn `
         -AccountPassword $svc -Enabled $true -PasswordNeverExpires $true
 }
 
 $t = ConvertTo-SecureString $TestPassword -AsPlainText -Force
 try { Get-ADUser 'tuser1' | Out-Null }
 catch {
-    New-ADUser 'TestUser1' -SamAccountName 'tuser1' `
+    New-ADUser 'TestUser1' -SamAccountName 'tuser1' -UserPrincipalName 'tuser1@corp.test.local' `
         -Path "OU=Utenti-Test,$base" -AccountPassword $t -Enabled $true
 }
 
