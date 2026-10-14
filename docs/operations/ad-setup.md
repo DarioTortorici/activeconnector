@@ -119,8 +119,10 @@ Note operative:
   dopo aver verificato gli smoke test read-only.
 - `MWA_AD_JWT_SECRET` e `MWA_AD_PAGE_TOKEN_SECRET`: usare almeno 32 byte
   casuali (HS256); non riutilizzare segreti di altri ambienti.
-- L'API locale ascolta in HTTP su `127.0.0.1` (TLS/mTLS da terminare a monte);
-  il traffico LDAP verso AD è sempre LDAPS.
+- L'API locale ascolta in HTTP su `127.0.0.1` (accettabile solo su loopback);
+  per esposizione non-loopback usare TLS integrato (`MWA_AD_TLS_ENABLED` +
+  cert/key, opz. mTLS) oppure terminare TLS a monte. Il traffico LDAP verso AD è
+  sempre LDAPS.
 
 ## 3. Trust store e LDAPS
 

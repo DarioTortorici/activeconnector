@@ -55,10 +55,11 @@ implemented in this build** and fail fast at startup with an explicit message.
 
 ## Local API transport
 
-The API binds to `127.0.0.1:8443`. Plain HTTP is acceptable only on loopback.
-Any exposure beyond loopback must use either built-in TLS (`tls_enabled=true`
-plus `tls_certfile`/`tls_keyfile`, optionally `tls_require_client_cert=true`
-with `tls_ca_certs` for mTLS) or a supported reverse proxy that terminates TLS.
+The API binds to `127.0.0.1:8443`. `tls_enabled` defaults to `false`, so plain
+HTTP is acceptable only on loopback. Any exposure beyond loopback must use either
+built-in TLS (`tls_enabled=true` plus `tls_certfile`/`tls_keyfile`, optionally
+`tls_require_client_cert=true` with `tls_ca_certs` for mTLS) or a supported
+reverse proxy that terminates TLS.
 
 ## Non-objectives (initial release)
 
