@@ -56,6 +56,13 @@ reboot). Idempotente: si puo' rilanciare; le risorse esistenti vengono saltate.
 Esito atteso nel job `verify`: `health: HEALTHY`, `LDAPS…True`,
 `resolve object_guid: …`, `dry-run: AUTHORIZED`.
 
+### Test end-to-end (senza redeploy)
+
+`Actions → lab-test → Run workflow`: esegue `health → resolve → update` su
+`tuser1` contro il lab gia' deployato, **senza modificare l'infrastruttura**.
+Con `apply=true` (default) fa la scrittura reale → atteso `state=AD_VERIFIED`;
+con `apply=false` solo dry-run. Da usare dopo `lab-start` o per le demo.
+
 ## Stop / Start (risparmio costi)
 
 - **`lab-stop`** (Actions → lab-stop → Run): `az vm deallocate` della VM DC →
