@@ -90,17 +90,25 @@ jobs:
             -n CustomScriptExtension --publisher Microsoft.Compute --version 1.10 --no-wait \
             --settings "{\"fileUris\":[\"$RAW_BASE/bootstrap-dc-part1.ps1\"]}" \
             --protected-settings @ps1.json || true
-      - name: Wait for DC reboot
+      - name: Wait for DC promotion (not just reboot)
         shell: bash
         run: |
           set -euo pipefail
-          for i in $(seq 1 60); do
-            if az vm run-command invoke -g "$AZ_RG" -n "$DC_VM" \
-              --command-id RunPowerShellScript --scripts "hostname" >/dev/null 2>&1; then
-              echo "DC back online"; break
-            fi
-            echo "waiting ($i/60)"; sleep 60
+          promoted=0
+          for i in $(seq 1 45); do
+            OUT=$(az vm run-command invoke -g "$AZ_RG" -n "$DC_VM" \
+              --command-id RunPowerShellScript --scripts "(Get-ADDomain).DNSRoot" \
+              --query "value[0].message" -o tsv 2>/dev/null || true)
+            if echo "$OUT" | grep -q "corp.test.local"; then promoted=1; echo "AD DS promoted ($i)"; break; fi
+            echo "waiting for AD DS promotion ($i/45)"; sleep 60
           done
+          if [ "$promoted" != "1" ]; then
+            echo "ERROR: DC not promoted in time; extension status follows"
+            az vm get-instance-view -g "$AZ_RG" -n "$DC_VM" \
+              --query "instanceView.extensions[?name=='CustomScriptExtension']" -o json || true
+            exit 1
+          fi
+          sleep 30
       - name: DC part 2 (OUs, users, LDAPS, delegation)
         env:
           P_SVC: ${{ secrets.SVC_MWA_PASSWORD }}
@@ -110,16 +118,29 @@ jobs:
           az vm extension set -g "$AZ_RG" --vm-name "$DC_VM" \
             -n CustomScriptExtension --publisher Microsoft.Compute --version 1.10 \
             --settings "{\"fileUris\":[\"$RAW_BASE/bootstrap-dc-part2.ps1\",\"$RAW_BASE/Grant-MwaDelegation.ps1\",\"$REPO_SCRIPTS_RAW/dc_ldaps_cert.ps1\"]}" \
-            --protected-settings @ps2.json
+            --protected-settings @ps2.json || true
+      - name: Verify DC setup (users, LDAPS PEM, delegation)
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=$(az vm run-command invoke -g "$AZ_RG" -n "$DC_VM" \
+            --command-id RunPowerShellScript --scripts @scripts/azure/verify-dc.ps1 \
+            --query "value[0].message" -o tsv 2>&1 || true)
+          echo "$OUT"
+          for marker in TUSER1=OK SVCMWA=OK PEM=OK; do
+            echo "$OUT" | grep -q "$marker" || { echo "MISSING: $marker"; exit 1; }
+          done
+          echo "$OUT" | grep -Eq "ACE=[1-9]" || { echo "MISSING: delegation ACE"; exit 1; }
       - name: Fetch DC LDAPS public PEM (public cert, safe to handle)
         shell: bash
         run: |
           set -euo pipefail
-          az vm run-command invoke -g "$AZ_RG" -n "$DC_VM" \
+          B64=$(az vm run-command invoke -g "$AZ_RG" -n "$DC_VM" \
             --command-id RunPowerShellScript \
-            --scripts "Get-Content C:\temp\dc-ldaps-cert.pem -Raw" \
-            --query "value[0].message" -o tsv > dc-ca.pem
-          head -c 120 dc-ca.pem
+            --scripts "[Convert]::ToBase64String([IO.File]::ReadAllBytes('C:\temp\dc-ldaps-cert.pem'))" \
+            --query "value[0].message" -o tsv)
+          echo "$B64" | grep -E '^[A-Za-z0-9+/=]{40,}$' | tr -d '\n' | base64 -d > dc-ca.pem
+          head -1 dc-ca.pem
       - uses: actions/upload-artifact@v4
         with:
           name: dc-ca-pem
@@ -175,9 +196,9 @@ jobs:
           ACR_ID=$(az acr show -g "$AZ_RG" -n "$ACR_NAME" --query id -o tsv 2>/dev/null || az acr show --name "$ACR_NAME" --query id -o tsv)
           az role assignment create --assignee-object-id "$PID" --assignee-principal-type ServicePrincipal \
             --role AcrPull --scope "$ACR_ID" || true
-          az webapp update -g "$AZ_RG" -n "$WEBAPP" \
-            --set siteConfig.acrUseManagedIdentityCreds=true siteConfig.alwaysOn=true \
-                  siteConfig.healthCheckPath=/api/v1/health
+          az webapp config set -g "$AZ_RG" -n "$WEBAPP" --always-on true
+          az webapp config set -g "$AZ_RG" -n "$WEBAPP" \
+            --generic-configurations '{"acrUseManagedIdentityCreds": true, "healthCheckPath": "/api/v1/health"}'
       - name: App settings (config + secrets + CA PEM)
         env:
           P_BIND: ${{ secrets.SVC_MWA_PASSWORD }}
@@ -196,7 +217,7 @@ jobs:
               'MWA_AD_DOMAIN_ID': 'domain-corp',
               'MWA_AD_BASE_DN': 'DC=corp,DC=test,DC=local',
               'MWA_AD_MANAGED_OUS': '["OU=Managed,DC=corp,DC=test,DC=local","OU=Utenti-Test,DC=corp,DC=test,DC=local"]',
-              'MWA_AD_DC_HOST': 'DC01.corp.test.local',
+              'MWA_AD_DC_HOST': 'vm-dc01.corp.test.local',
               'MWA_AD_DC_PORT': '636',
               'MWA_AD_USE_LDAPS': 'true',
               'MWA_AD_LDAPS_REQUIRE_CERT': 'true',
@@ -262,7 +283,7 @@ jobs:
         run: |
           az vm run-command invoke -g "$AZ_RG" -n "$DC_VM" \
             --command-id RunPowerShellScript \
-            --scripts "Test-NetConnection DC01.corp.test.local -Port 636 | Select-Object TcpTestSucceeded" \
+            --scripts "Test-NetConnection localhost -Port 636 | Select-Object TcpTestSucceeded" \
             --query "value[0].message" -o tsv
       - name: Connector health, resolve, dry-run over public URL
         env:
